@@ -1,0 +1,197 @@
+# costhound read-only role for every account of an AWS Organization.
+#
+# Deploy it to all member accounts with a service-managed StackSet from the
+# management account (or a delegated administrator), then run:
+#   costhound -org
+#
+#   aws cloudformation create-stack-set --stack-set-name costhound-readonly \
+#     --template-body file://costhound-readonly-role.yaml \
+#     --parameters ParameterKey=TrustedAccountId,ParameterValue=<management account id> \
+#     --permission-model SERVICE_MANAGED --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false \
+#     --capabilities CAPABILITY_NAMED_IAM
+#   aws cloudformation create-stack-instances --stack-set-name costhound-readonly \
+#     --deployment-targets OrganizationalUnitIds=<root or OU id> --regions us-east-1
+#
+# The role can only describe and read metrics. It cannot read object data,
+# secret values, user data or logs, and cannot change anything. The second
+# statement only works through EC2's AMI reference check (aws:CalledVia
+# ec2-images.amazonaws.com): EC2 looks at launch templates, SSM parameters and
+# Image Builder recipes for us, and costhound can't call those reads itself.
+# The action list is the same as iam-policy.json (a test keeps them in sync).
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Read-only role for the costhound AWS waste scanner
+Parameters:
+  TrustedAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+    Description: The account costhound runs in (usually the management account)
+  RoleName:
+    Type: String
+    Default: CosthoundReadOnly
+Resources:
+  CosthoundReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: costhound read-only scan
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${TrustedAccountId}:root"
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: costhound-readonly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Resource: "*"
+                Action:
+                  - ec2:DescribeRegions
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeInstances
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeImages
+                  - ec2:DescribeNatGateways
+                  - ec2:DescribeCapacityReservations
+                  - ec2:DescribeRouteTables
+                  - ec2:DescribeVpcEndpoints
+                  - logs:DescribeLogGroups
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeInstanceHealth
+                  - elasticloadbalancing:DescribeTags
+                  - route53:ListHealthChecks
+                  - route53:ListHostedZones
+                  - route53:GetDNSSEC
+                  - route53:ListResourceRecordSets
+                  - cloudtrail:DescribeTrails
+                  - cloudtrail:GetTrailStatus
+                  - cloudtrail:GetEventSelectors
+                  - route53:ListTrafficPolicyInstances
+                  - cloudwatch:DescribeAlarms
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DescribeTargetHealth
+                  - secretsmanager:ListSecrets
+                  - tag:GetResources
+                  - ecr:DescribeRepositories
+                  - ecr:DescribeImages
+                  - ecr:GetLifecyclePolicy
+                  - lambda:ListFunctions
+                  - s3:ListAllMyBuckets
+                  - s3:GetLifecycleConfiguration
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketObjectLockConfiguration
+                  - elasticache:DescribeCacheClusters
+                  - dynamodb:ListTables
+                  - dynamodb:DescribeTable
+                  - application-autoscaling:DescribeScalableTargets
+                  - ec2:DescribeFastSnapshotRestores
+                  - backup:ListBackupVaults
+                  - backup:ListRecoveryPointsByBackupVault
+                  - elasticfilesystem:DescribeFileSystems
+                  - kinesis:ListStreams
+                  - kinesis:DescribeStreamSummary
+                  - ec2:DescribeImageReferences
+                  - ec2:DescribeHosts
+                  - ec2:DescribeInstanceTypeOfferings
+                  - globalaccelerator:ListAccelerators
+                  - globalaccelerator:ListListeners
+                  - globalaccelerator:ListEndpointGroups
+                  - globalaccelerator:ListTagsForResource
+                  - kms:ListAliases
+                  - kms:ListKeys
+                  - kms:DescribeKey
+                  - kms:ListKeyRotations
+                  - rds:DescribeDBInstances
+                  - rds:DescribeDBClusters
+                  - rds:DescribeDBSnapshots
+                  - rds:DescribeDBClusterSnapshots
+                  - autoscaling:DescribeAutoScalingGroups
+                  - eks:ListClusters
+                  - eks:DescribeCluster
+                  - eks:ListNodegroups
+                  - eks:ListFargateProfiles
+                  - eks:ListCapabilities
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeFlowLogs
+                  - cloudwatch:GetMetricData
+                  - eks:DescribeClusterVersions
+                  - organizations:DescribeOrganization
+                  - rds:DescribeDBMajorEngineVersions
+                  - rds:DescribeDBEngineVersions
+                  - cost-optimization-hub:ListRecommendations
+                  - organizations:ListAccounts
+                  - pricing:GetProducts
+                  - dms:DescribeReplicationInstances
+                  - dms:DescribeReplicationTasks
+                  - dms:DescribeReplicationConfigs
+                  - dms:DescribeReplications
+                  - transfer:DescribeServer
+                  - transfer:ListServers
+                  - transfer:ListUsers
+                  - route53resolver:ListResolverEndpoints
+                  - cloudwatch:ListMetrics
+                  - es:ListDomainNames
+                  - es:DescribeDomains
+                  - aoss:ListCollections
+                  - aoss:BatchGetCollection
+                  - aoss:ListCollectionGroups
+                  - aoss:BatchGetCollectionGroup
+                  - bedrock:ListKnowledgeBases
+                  - bedrock:GetKnowledgeBase
+                  - sagemaker:ListEndpoints
+                  - sagemaker:DescribeEndpoint
+                  - sagemaker:DescribeEndpointConfig
+                  - redshift:DescribeClusters
+                  - ec2:DescribeTransitGatewayAttachments
+                  - kafka:ListClusters
+                  - kafka:ListNodes
+                  - ec2:DescribeClientVpnEndpoints
+                  - ec2:DescribeClientVpnTargetNetworks
+                  - network-firewall:ListFirewalls
+                  - network-firewall:DescribeFirewall
+                  - ec2:DescribeReservedInstances
+                  - rds:DescribeReservedDBInstances
+                  - elasticache:DescribeReservedCacheNodes
+                  - es:DescribeReservedInstances
+                  - redshift:DescribeReservedNodes
+                  - savingsplans:DescribeSavingsPlans
+                  - elasticmapreduce:ListClusters
+                  - elasticmapreduce:DescribeCluster
+                  - elasticmapreduce:ListSteps
+                  - memorydb:DescribeClusters
+                  - lambda:ListEventSourceMappings
+                  - lambda:ListProvisionedConcurrencyConfigs
+                  - lambda:GetProvisionedConcurrencyConfig
+                  - ecs:ListClusters
+                  - ecs:ListServices
+                  - ecs:DescribeServices
+                  - ecs:DescribeTaskDefinition
+              # API Gateway's one read action, on REST APIs and stages only: on /apikeys it can return key values.
+              - Effect: Allow
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:apigateway:*::/restapis"
+                  - !Sub "arn:${AWS::Partition}:apigateway:*::/restapis/*/stages"
+                Action:
+                  - apigateway:GET
+              - Effect: Allow
+                Resource: "*"
+                Action:
+                  - ec2:DescribeLaunchTemplates
+                  - ec2:DescribeLaunchTemplateVersions
+                  - ssm:DescribeParameters
+                  - ssm:GetParameters
+                  - imagebuilder:ListImageRecipes
+                  - imagebuilder:ListContainerRecipes
+                  - imagebuilder:GetContainerRecipe
+                Condition:
+                  ForAnyValue:StringEquals:
+                    aws:CalledVia:
+                      - ec2-images.amazonaws.com
+Outputs:
+  RoleArn:
+    Value: !GetAtt CosthoundReadOnlyRole.Arn
