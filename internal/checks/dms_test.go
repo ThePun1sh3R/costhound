@@ -11,6 +11,8 @@ import (
 )
 
 var addMigrationUsageFixture = func(*inventory.Region) {}
+var addFSxUsageFixture = func(*inventory.Region) {}
+var addDBClusterUsageFixture = func(*inventory.Region) {}
 
 func dmsFixture() (*inventory.Region, inventory.DMSInstance) {
 	i := inventory.DMSInstance{
@@ -70,7 +72,7 @@ func TestIdleDMSUsesStopTimeAndBuiltInRates(t *testing.T) {
 			}
 			if tc.usd > 0 {
 				wantUSD(t, got[0], tc.usd)
-				if !strings.Contains(got[0].Detail, "at least") || got[0].Confidence != "low" {
+				if !strings.Contains(got[0].Detail, "(the us-east-1 rate; most regions charge more)") || got[0].Confidence != "low" {
 					t.Errorf("free evidence or price basis is wrong: %+v", got[0])
 				}
 			} else if got[0].Priced {
@@ -87,7 +89,7 @@ func TestIdleDMSMissingTasksAndServerlessState(t *testing.T) {
 	r.DMS.Tasks = nil
 	r.DMS.Serverless = []inventory.DMSReplication{stopped, {ARN: "config-state-unknown"}}
 	got := IdleDMS(r, opts())
-	if len(got) != 1 || got[0].Key != stopped.ARN || got[0].Priced || !strings.Contains(got[0].Detail, "unverified") {
+	if len(got) != 1 || got[0].Key != stopped.ARN || got[0].Priced || !strings.Contains(got[0].Detail, "doesn't say whether a stopped one still holds any") {
 		t.Fatalf("wanted only the known stopped and unpriced Serverless replication, got %+v", got)
 	}
 	if !slices.Equal(r.Unjudged, []string{idleDMS + "|" + i.ARN, idleDMS + "|config-state-unknown"}) {

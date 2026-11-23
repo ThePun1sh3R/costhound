@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,7 +110,41 @@ func TestRejections(t *testing.T) {
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
+			if errors.Is(err, ErrExpired) {
+				end := time.Unix(now.Unix(), 0).UTC().Format("2006-01-02")
+				if !strings.Contains(err.Error(), end) || !strings.Contains(err.Error(), RenewURL) {
+					t.Fatalf("expired error must name the end date and renew link: %v", err)
+				}
+			}
 		})
+	}
+}
+
+func TestExpiryWarning(t *testing.T) {
+	end3 := now.Add(3 * 24 * time.Hour)
+	want3 := fmt.Sprintf("costhound: your Pro key ends on %s (in 3 day(s)): renew at %s",
+		end3.UTC().Format("2006-01-02"), RenewURL)
+	if got := ExpiryWarning(Claims{Plan: PlanPro, Expires: end3.Unix()}, now); got != want3 {
+		t.Fatalf("3 days left:\n got %q\nwant %q", got, want3)
+	}
+	if got := ExpiryWarning(Claims{Plan: PlanPro, Expires: now.Add(8 * 24 * time.Hour).Unix()}, now); got != "" {
+		t.Fatalf("8 days left: got %q, want empty", got)
+	}
+	if got := ExpiryWarning(Claims{Plan: PlanPro, Expires: 0}, now); got != "" {
+		t.Fatalf("Expires 0: got %q, want empty", got)
+	}
+	pub, priv := newKeys(t)
+	expired := issue(t, priv, Claims{ID: "x", Plan: PlanPro, Expires: now.Unix()})
+	c, err := Verify(expired, pub, now)
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("err = %v, want ErrExpired", err)
+	}
+	end := time.Unix(now.Unix(), 0).UTC().Format("2006-01-02")
+	if !strings.Contains(err.Error(), end) || !strings.Contains(err.Error(), RenewURL) {
+		t.Fatalf("expired error must name the end date and renew link: %v", err)
+	}
+	if got := ExpiryWarning(c, now); got != "" {
+		t.Fatalf("expired Claims: got warning %q, want empty", got)
 	}
 }
 
@@ -259,5 +294,13 @@ func TestAccountLock(t *testing.T) {
 	// Free stays free, with no message.
 	if s := Resolve("", pub, now).ForAccount("1", ""); s.Plan != PlanFree || s.Problem != "" {
 		t.Fatalf("no key: %+v", s)
+	}
+}
+
+func TestExpiryWarningLastDaySaysOne(t *testing.T) {
+	now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+	got := ExpiryWarning(Claims{Plan: "pro", Expires: now.Add(2 * time.Hour).Unix()}, now)
+	if !strings.Contains(got, "(in 1 day(s))") {
+		t.Errorf("2 hours left should read 1 day, got %q", got)
 	}
 }

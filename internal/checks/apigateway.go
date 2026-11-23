@@ -56,7 +56,7 @@ func apiCacheFinding(r *inventory.Region, s inventory.RestStage, check, detail s
 	f := Finding{
 		Check: check, Region: r.Name, Resource: key + " (" + s.APIName + ")", Detail: detail, // the key and owner ref come from the label's first word
 		Fix: []string{
-			"# a person's call: callers may rely on the cache's latency. Turn the cache off, or turn caching on for the GET methods that should use it:",
+			"# a person's call: turn the cache off if no method should use it, or turn caching on for the GET methods that should:",
 			fmt.Sprintf("# aws apigateway update-stage --region %s --rest-api-id %s --stage-name %s --patch-operations op=replace,path=/cacheClusterEnabled,value=false", r.Name, s.API, s.Stage),
 		},
 		// The API's name is free text: the Resource label carries it, not a fact.

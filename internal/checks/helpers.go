@@ -12,7 +12,7 @@ import (
 const bytesPerGiB = float64(1 << 30)
 
 func money(v float64) string {
-	return "$" + strings.TrimSuffix(strings.TrimSuffix(fmt.Sprintf("%.2f", v), "0"), ".0")
+	return "$" + strings.TrimSuffix(fmt.Sprintf("%.2f", v), ".00") // $28, $272.50
 }
 
 func listSome(xs []string, n int) string {

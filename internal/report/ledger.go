@@ -18,19 +18,21 @@ type LedgerEntry struct {
 	FixedAt    time.Time  `json:"fixed_at"`
 	BackAt     *time.Time `json:"back_at,omitempty"`
 	Ends       *time.Time `json:"ends,omitempty"` // when it would have stopped costing anyway (the finding's "ends" fact)
+	Keys       []string   `json:"keys,omitempty"` // HubKeys of the resolved finding; open ours block a lagging hub copy (and same-run key shares)
 }
 
 // Ledger sums the verified fixes of an account.
 type Ledger struct {
-	Fixes         int       `json:"fixes"`           // still fixed
-	CameBack      int       `json:"came_back"`       // fixed once, back since
-	MonthlyNow    float64   `json:"monthly_usd_now"` // spend that no longer happens each month
-	SavedToDate   float64   `json:"saved_usd_to_date"`
-	Since         time.Time `json:"since,omitempty"`
-	ThisRunFixes  int       `json:"this_run_fixes"`
-	ThisRunUSD    float64   `json:"this_run_monthly_usd"`
-	Unverified    bool      `json:"unverified,omitempty"` // thresholds changed: this run's fixes weren't counted
-	UnverifiedWhy string    `json:"unverified_why,omitempty"`
+	Fixes          int       `json:"fixes"`           // still fixed
+	CameBack       int       `json:"came_back"`       // fixed once, back since
+	MonthlyNow     float64   `json:"monthly_usd_now"` // spend that no longer happens each month
+	SavedToDate    float64   `json:"saved_usd_to_date"`
+	Since          time.Time `json:"since,omitempty"`
+	ThisRunFixes   int       `json:"this_run_fixes"`
+	ThisRunUSD     float64   `json:"this_run_monthly_usd"`
+	Unverified     bool      `json:"unverified,omitempty"` // thresholds changed: this run's fixes weren't counted
+	UnverifiedWhy  string    `json:"unverified_why,omitempty"`
+	AlreadyCounted []string  `json:"already_counted,omitempty"` // this run: resolved findings not booked (same resource already fixed)
 }
 
 const hoursPerMonth = 730.0
@@ -51,6 +53,12 @@ func (r *Report) writeLedger(w io.Writer) {
 	}
 	if l.Unverified {
 		fmt.Fprintf(w, "  Not counted this run: %s.\n", l.UnverifiedWhy)
+	}
+	if len(l.AlreadyCounted) > 0 {
+		fmt.Fprintln(w, "  Not counted again (the same fix is already counted):")
+		for _, line := range l.AlreadyCounted {
+			fmt.Fprintf(w, "    %s\n", line)
+		}
 	}
 	fmt.Fprintln(w)
 }

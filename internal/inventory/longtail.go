@@ -386,15 +386,21 @@ type LaunchSource struct {
 	Config                        string
 }
 
-// DBCluster is an RDS DB cluster as aurora-serverless-pause needs it.
+// DBCluster is an RDS DB cluster as aurora-serverless-pause and idle-db-cluster need it.
 type DBCluster struct {
 	ID, ARN, ResourceID string
 	Engine, Version     string
 	Status, StorageType string // StorageType "aurora-iopt1" is I/O-Optimized
+	EngineMode          string // "provisioned", "serverless", or ""
+	InstanceClass       string // DBClusterInstanceClass: set only on Multi-AZ DB clusters (MySQL/PostgreSQL)
+	ReplicationSource   string // ReplicationSourceIdentifier: a DocumentDB secondary
 	Global              string // the global database it's a member of, "" if none
+	ReadReplicas        int    // len(ReadReplicaIdentifiers)
 	DataAPI             bool   // the RDS Data API is on: its requests wake the writer
 	ActivityStream      bool   // a database activity stream is started: the writer can't pause
-	ServerlessV2        bool   // it has a Serverless v2 capacity range
+	DeletionProtection  bool
+	Limitless           bool // ClusterScalabilityType == "limitless"
+	ServerlessV2        bool // it has a Serverless v2 capacity range
 	MinACU, MaxACU      float64
 	PauseAfter          int // SecondsUntilAutoPause; set only while MinACU is 0
 	Members             []DBClusterMember
@@ -447,7 +453,11 @@ func loadDBSnapshots(ctx context.Context, r *Region, c RDSSnapshotAPI) (string, 
 			live["cluster-res:"+aws.ToString(d.DbClusterResourceId)] = aws.ToString(d.DbClusterResourceId) != ""
 			x := DBCluster{ID: aws.ToString(d.DBClusterIdentifier), ARN: aws.ToString(d.DBClusterArn), ResourceID: aws.ToString(d.DbClusterResourceId),
 				Engine: aws.ToString(d.Engine), Version: aws.ToString(d.EngineVersion), Status: aws.ToString(d.Status), StorageType: aws.ToString(d.StorageType),
-				Global: aws.ToString(d.GlobalClusterIdentifier), DataAPI: aws.ToBool(d.HttpEndpointEnabled), Created: d.ClusterCreateTime,
+				EngineMode: aws.ToString(d.EngineMode), InstanceClass: aws.ToString(d.DBClusterInstanceClass),
+				ReplicationSource: aws.ToString(d.ReplicationSourceIdentifier),
+				Global:            aws.ToString(d.GlobalClusterIdentifier), ReadReplicas: len(d.ReadReplicaIdentifiers),
+				DataAPI: aws.ToBool(d.HttpEndpointEnabled), DeletionProtection: aws.ToBool(d.DeletionProtection),
+				Limitless: d.ClusterScalabilityType == rdstypes.ClusterScalabilityTypeLimitless, Created: d.ClusterCreateTime,
 				ActivityStream: d.ActivityStreamStatus == rdstypes.ActivityStreamStatusStarted || d.ActivityStreamStatus == rdstypes.ActivityStreamStatusStarting}
 			if s := d.ServerlessV2ScalingConfiguration; s != nil && s.MaxCapacity != nil {
 				x.ServerlessV2, x.MinACU, x.MaxACU, x.PauseAfter = true, aws.ToFloat64(s.MinCapacity), aws.ToFloat64(s.MaxCapacity), int(aws.ToInt32(s.SecondsUntilAutoPause))

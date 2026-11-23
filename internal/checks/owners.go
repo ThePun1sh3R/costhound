@@ -9,8 +9,10 @@ import "strings"
 // test makes sure every check is in one of the two.
 var tagRefs = map[string]func(f Finding, derived bool) string{
 	"idle-dms-instance":            byARN("arn"),
+	"unused-workspace":             byFact("workspaces:workspace/", "workspace"),
 	"idle-transfer-server":         byFact("transfer:server/", "transfer_server"),
 	"idle-resolver-endpoint":       byFact("route53resolver:resolver-endpoint/", "resolver_endpoint"),
+	"idle-fsx":                     byARN("arn"),
 	"unattached-ebs":               byKey("ec2:volume/"),
 	"gp2-to-gp3":                   byKey("ec2:volume/"),
 	"piops-to-gp3":                 byKey("ec2:volume/"),
@@ -52,6 +54,7 @@ var tagRefs = map[string]func(f Finding, derived bool) string{
 	"unused-ami":                   byKey("ec2:image/"),
 	"idle-dedicated-host":          byKey("ec2:dedicated-host/"),
 	"disabled-kms-key":             byARN("key_arn"),
+	"unused-private-ca":            byARN("ca"),
 	"empty-eks-cluster":            byKey("eks:cluster/"),
 	"eks-extended-support":         byKey("eks:cluster/"),
 	"nat-no-routes":                byKey("ec2:natgateway/"),
@@ -72,6 +75,7 @@ var tagRefs = map[string]func(f Finding, derived bool) string{
 	"s3-versions-no-expiry": byKey("s3:"), // a bucket ARN names no type: arn:aws:s3:::<bucket>
 	// Batch 5. A Classic Load Balancer's ARN is loadbalancer/<name>.
 	"idle-rds":              byARN("arn"),
+	"idle-db-cluster":       byARN("arn"),
 	"rds-old-class":         byARN("arn"),
 	"idle-classic-lb":       byKey("elasticloadbalancing:loadbalancer/"),
 	"quiet-classic-lb":      byKey("elasticloadbalancing:loadbalancer/"),

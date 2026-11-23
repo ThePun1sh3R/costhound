@@ -72,6 +72,10 @@ func PriceEmptyZones(fs []Finding) {
 			}
 		}
 		f.MonthlyUSD, f.Priced = usd, true
-		f.Detail = fmt.Sprintf("public hosted zone with only its NS and SOA records: it answers no query, and deleting it saves $%.2f a month (an account's first 25 zones are $0.50 each and the rest $0.10: %d zones here, so $0.10 if your Organization has more than 25%s; an Advanced hosted zone, which the API doesn't show, is $5.00). A zone deleted within 12 hours of being made isn't billed: one made today may be waiting for its records", usd, n, beyond)
+		tier := fmt.Sprintf("this account has %d%s", n, beyond)
+		if n <= 25 {
+			tier = fmt.Sprintf("this account has %d, so $0.10 if your Organization's accounts hold more than 25 together", n)
+		}
+		f.Detail = fmt.Sprintf("public hosted zone with only its NS and SOA records: it answers no query, and deleting it saves $%.2f a month (the first 25 zones on a bill are $0.50 each and the rest $0.10: %s; an Advanced hosted zone, which the API doesn't show, costs $5.00 more). A zone deleted within 12 hours of being made isn't billed: one made today may be waiting for its records", usd, tier)
 	}
 }

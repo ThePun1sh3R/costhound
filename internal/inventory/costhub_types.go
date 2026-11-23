@@ -17,6 +17,8 @@ type Recommendation struct {
 	Restart, Rollback                            bool
 	LookbackDays                                 int
 	ResourceARN                                  string // the resource's ARN when it has one
+	AccountID                                    string // the resource's account (Org: a member's)
+	FromOrg                                      bool   // listed only via the Organization management account's hub (-org)
 }
 
 // CostHub is what Cost Optimization Hub said for the account.

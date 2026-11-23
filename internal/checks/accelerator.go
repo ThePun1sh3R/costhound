@@ -26,9 +26,9 @@ func acceleratorFinding(check string, a inventory.Accelerator, state string) Fin
 			enabled, state, pricing.AcceleratorHour, a.IPv4),
 		Evidence: []string{fmt.Sprintf("Global Accelerator (us-west-2): status %s, %d listener(s), %d endpoint group(s), %d endpoint(s), created %s",
 			a.Status, a.Listeners, a.Groups, a.Endpoints, dateOf(a.Created))},
-		Why: "it may be kept to hold its static IP addresses: deleting releases them for good (unless they're your own, BYOIP), so check no allow-list or DNS record names them",
+		Why: "it may be kept to hold its static IP addresses: deleting releases them for good (unless they're your own, BYOIP), so check no allowlist or DNS record names them",
 		Fix: []string{
-			"# deleting releases its static IP addresses for good (unless they're BYOIP): check allow-lists and DNS records first",
+			"# deleting releases its static IP addresses for good (unless they're BYOIP): check allowlists and DNS records first",
 			fmt.Sprintf("# aws globalaccelerator update-accelerator --region us-west-2 --accelerator-arn %s --no-enabled", a.ARN),
 			"# then delete its endpoint groups and listeners (delete-endpoint-group, delete-listener)",
 			fmt.Sprintf("# aws globalaccelerator delete-accelerator --region us-west-2 --accelerator-arn %s", a.ARN),
@@ -52,7 +52,7 @@ func IdleAccelerator(r *inventory.Region, o Options) []Finding {
 		var state string
 		switch {
 		case !a.Enabled:
-			state = "disabled, it routes nothing"
+			state = "it routes nothing"
 		case a.Listeners == 0:
 			state = "no listener, so it routes nothing"
 		case a.Groups == 0:

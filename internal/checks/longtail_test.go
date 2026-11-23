@@ -310,7 +310,7 @@ func tailUsage() inventory.Tail {
 			{Name: "silent-model", Created: ago(60), Variants: []inventory.Variant{{Name: "AllTraffic", Type: "ml.m5.large", Count: 1}}},
 		},
 		Warehouses: []inventory.Warehouse{
-			{ID: "bi-cluster", NodeType: "ra3.xlplus", Status: "available", Nodes: 2, Created: ago(100)},
+			{ID: "bi-cluster", NodeType: "ra3.xlplus", Status: "available", Nodes: 2, Created: ago(100), Pausable: true},
 			{ID: "busy-wh", NodeType: "ra3.xlplus", Status: "available", Nodes: 2, Created: ago(100)},
 			{ID: "paused-wh", NodeType: "ra3.xlplus", Status: "paused", Nodes: 2, Created: ago(100)},
 			{ID: "old-ds2", NodeType: "ds2.xlarge", Status: "available", Nodes: 1, Created: ago(900)},
@@ -733,6 +733,69 @@ func TestIdleLoadBalancersThatMayRefill(t *testing.T) {
 	}
 	if f := got["alb-plain"]; f.Confidence != "" || !strings.HasPrefix(f.Fix[0], "aws elbv2 delete-load-balancer") || f.Facts["asgs"] != "" {
 		t.Errorf("alb-plain: %+v", f)
+	}
+}
+
+// An ALB with no targets still answers users when a listener redirects or
+// returns a fixed response: low; unread listeners: medium. Below high, the
+// delete is a comment (as idle-classic-lb's).
+func TestIdleLoadBalancersThatStillAnswer(t *testing.T) {
+	r := fixture()
+	r.LoadBalancers = []inventory.LoadBalancer{
+		{ARN: "arn:lb/redirect", Name: "alb-redirect", Type: "application", Responds: 1},
+		{ARN: "arn:lb/unread", Name: "alb-unread", Type: "application", ListenersUnknown: true},
+		{ARN: "arn:lb/idle", Name: "alb-idle", Type: "application"},
+	}
+	got := byResource(IdleLoadBalancers(r, opts()))
+	if f := got["alb-redirect"]; f.Confidence != "low" || !strings.HasPrefix(f.Fix[0], "# ") || !strings.Contains(f.Detail, "1 listener(s) redirect or return a fixed response") ||
+		!strings.Contains(f.Why, "may still be in use") {
+		t.Errorf("alb-redirect: %+v", f)
+	}
+	if f := got["alb-unread"]; f.Confidence != "medium" || len(f.Fix) != 2 || !strings.HasPrefix(f.Fix[0], "# a person's call: check its listeners") ||
+		!strings.HasPrefix(f.Fix[1], "# aws elbv2 delete-load-balancer") || !strings.Contains(f.Detail, "couldn't be read") {
+		t.Errorf("alb-unread: %+v", f)
+	}
+	if f := got["alb-idle"]; f.Confidence != "" || !strings.HasPrefix(f.Fix[0], "aws elbv2 delete-load-balancer") {
+		t.Errorf("alb-idle: %+v", f)
+	}
+	// A low one's Fix says what a person checks before the commented delete,
+	// and Evidence names the reads behind the confidence.
+	ev := func(f Finding) string { return strings.Join(f.Evidence, "\n") }
+	if f := got["alb-redirect"]; len(f.Fix) != 2 || !strings.HasPrefix(f.Fix[0], "# a person's call: check that nobody relies on its redirects") ||
+		!strings.HasPrefix(f.Fix[1], "# aws elbv2 delete-load-balancer") ||
+		!strings.Contains(ev(f), "ELB DescribeTargetGroups and DescribeTargetHealth: no target groups") ||
+		!strings.Contains(ev(f), "ELB DescribeListeners and DescribeRules: 1 listener(s) with a redirect or fixed-response action") {
+		t.Errorf("alb-redirect fix and evidence: %+v", f)
+	}
+	if f := got["alb-unread"]; !strings.Contains(ev(f), "DescribeListeners and DescribeRules: couldn't be read") {
+		t.Errorf("alb-unread evidence: %+v", f)
+	}
+	if f := got["alb-idle"]; !strings.Contains(ev(f), "no listener redirects or returns a fixed response") {
+		t.Errorf("alb-idle evidence: %+v", f)
+	}
+}
+
+// An internet-facing ALB or NLB also pays for its public IPv4 addresses,
+// which its hourly price leaves out; an internal one and a GWLB don't.
+func TestIdleLoadBalancersPublicIPv4(t *testing.T) {
+	r := fixture()
+	r.LoadBalancers = []inventory.LoadBalancer{
+		{ARN: "arn:lb/pub-alb", Name: "pub-alb", Type: "application", Scheme: "internet-facing"},
+		{ARN: "arn:lb/pub-nlb", Name: "pub-nlb", Type: "network", Scheme: "internet-facing"},
+		{ARN: "arn:lb/int-alb", Name: "int-alb", Type: "application", Scheme: "internal"},
+		{ARN: "arn:lb/gwlb", Name: "gwlb", Type: "gateway"},
+	}
+	got := byResource(IdleLoadBalancers(r, opts()))
+	const note = "it also pays $3.65 a month for each public IPv4 address (one per zone it's in), which this price leaves out"
+	for _, name := range []string{"pub-alb", "pub-nlb"} {
+		if !strings.Contains(got[name].Detail, note) {
+			t.Errorf("%s: %q", name, got[name].Detail)
+		}
+	}
+	for _, name := range []string{"int-alb", "gwlb"} {
+		if strings.Contains(got[name].Detail, "IPv4") {
+			t.Errorf("%s: %q", name, got[name].Detail)
+		}
 	}
 }
 

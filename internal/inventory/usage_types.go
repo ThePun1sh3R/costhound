@@ -56,6 +56,7 @@ type RDSAPI interface {
 	rds.DescribeDBInstancesAPIClient
 	rds.DescribeDBMajorEngineVersionsAPIClient
 	rds.DescribeDBEngineVersionsAPIClient
+	rds.DescribeBlueGreenDeploymentsAPIClient
 }
 
 // Reservation is a commitment the account bought: a Reserved Instance, a
@@ -64,6 +65,7 @@ type Reservation struct {
 	Kind       string // "EC2", "RDS", "ElastiCache", "OpenSearch", "Redshift", "Savings Plan"
 	ID, ARN    string // ARN: "" where the service has none (OpenSearch, Redshift, EC2 in the SDK)
 	What       string // instance or node type; a Savings Plan's type
+	Product    string // RDS: ProductDescription (engine family); empty elsewhere
 	Count      int    // instances or nodes (Savings Plans: 0)
 	Commitment string // Savings Plans: $ per hour
 	State      string // "active", "retired", or "queued" (a purchase waiting to start: a renewal)

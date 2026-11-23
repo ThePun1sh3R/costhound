@@ -21,10 +21,12 @@ fi
 # Moto can't stop Transfer servers. Seed the stopped state through its model.
 # Its DMS model emits ISO dates where AWS JSON 1.1 expects epoch seconds.
 # Backdate only the planted DMS instance so Free can judge it without waiting.
+# Backdate a Private CA tagged e2e-age=old past the 30-day free trial.
 "$VENV/bin/python" - "$PORT" > .e2e/moto.log 2>&1 <<'PYMOTO' &
 import sys
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
+from moto.acmpca.models import CertificateAuthority, acmpca_backends
 from moto.dms.models import FakeReplicationInstance
 from moto.server import main
 from moto.transfer.types import Server, ServerState
@@ -47,6 +49,17 @@ def dms_fixture_dict(self):
     response["InstanceCreateTime"] = created.timestamp()
     return response
 FakeReplicationInstance.to_dict = dms_fixture_dict
+
+ca_to_json = CertificateAuthority.to_json
+def pca_fixture_json(self):
+    response = ca_to_json(self)
+    backend = acmpca_backends[self.account_id][self.region_name]
+    tags = backend.tagger.get_tag_dict_for_resource(self.arn)
+    if tags.get("e2e-age") == "old":
+        response["CreatedAt"] = (datetime.now(timezone.utc) - timedelta(days=40)).timestamp()
+        response["UsageMode"] = "GENERAL_PURPOSE"  # moto hardcodes SHORT_LIVED_CERTIFICATE; AWS defaults to this
+    return response
+CertificateAuthority.to_json = pca_fixture_json
 
 main(["-H", "127.0.0.1", "-p", sys.argv[1]])
 PYMOTO
@@ -198,13 +211,19 @@ aws transfer create-user --server-id "$TRANSFER" --user-name e2e-transfer-user -
 DMS=$(q dms create-replication-instance --replication-instance-identifier e2e-dms-idle \
   --replication-instance-class dms.r5.large --allocated-storage 100 --no-multi-az --no-publicly-accessible \
   --query ReplicationInstance.ReplicationInstanceArn)
+# moto has create/describe file systems (no Lifecycle/CreationTime); it lacks DescribeVolumes and DescribeDataRepositoryAssociations.
+aws fsx create-file-system --file-system-type LUSTRE --storage-capacity 1200 --subnet-ids "$SUB1" \
+  --lustre-configuration DeploymentType=SCRATCH_2 > /dev/null
+PCA=$(q acm-pca create-certificate-authority --certificate-authority-type ROOT \
+  --certificate-authority-configuration 'KeyAlgorithm=RSA_2048,SigningAlgorithm=SHA256WITHRSA,Subject={CommonName=e2e-pca}' \
+  --tags Key=e2e-age,Value=old --query CertificateAuthorityArn)
 
 echo "running costhound..."
 "$BIN" -regions $R -json -snapshot-age 0 -stopped-days 0 -min-log-gib 0 -secret-days 0 -min-usd 0 > .e2e/report.json
 
-python3 - "$VOL" "$SNAP" "$OLD" "$STOPPED" "$EIP" "$NAT_EIP" "$VPC" "$IO1" "$S3IFACE" "$UNUSED_AMI" "$TPL_AMI" "$DHOST" "$KMSKEY" "$KMSON" "$NATGW" "$NATGW2" "$HC" "$HC2" "$IO1MA" "${EMPTYZONE##*/}" "${PRIVZONE##*/}" "${ZONE##*/}" "$MONITORED" <<'PY'
+python3 - "$VOL" "$SNAP" "$OLD" "$STOPPED" "$EIP" "$NAT_EIP" "$VPC" "$IO1" "$S3IFACE" "$UNUSED_AMI" "$TPL_AMI" "$DHOST" "$KMSKEY" "$KMSON" "$NATGW" "$NATGW2" "$HC" "$HC2" "$IO1MA" "${EMPTYZONE##*/}" "${PRIVZONE##*/}" "${ZONE##*/}" "$MONITORED" "$PCA" <<'PY'
 import json, sys
-vol, snap, old, stopped, eip, nat_eip, vpc, io1, s3iface, unused_ami, tpl_ami, dhost, kmskey, kmson, natgw, natgw2, hc, hc2, io1ma, emptyzone, privzone, fullzone, monitored = sys.argv[1:]
+vol, snap, old, stopped, eip, nat_eip, vpc, io1, s3iface, unused_ami, tpl_ami, dhost, kmskey, kmson, natgw, natgw2, hc, hc2, io1ma, emptyzone, privzone, fullzone, monitored, pca = sys.argv[1:]
 r = json.load(open(".e2e/report.json"))
 f = r["findings"]
 blob = json.dumps(f)
@@ -220,6 +239,7 @@ want = {
     "nat-no-routes": natgw, "idle-classic-lb": "e2e-clb", "s3-versions-no-expiry": "e2e-versioned", "r53-unused-health-check": hc,
     "io1-to-io2": io1ma, "api-cache-unused": "/stages/cold", "cloudtrail-duplicate": "e2e-trail-copy",
     "empty-hosted-zone": emptyzone, "ec2-detailed-monitoring": monitored, "idle-dms-instance": "e2e-dms-idle",
+    "unused-private-ca": pca,
 }
 bad = [f"{c} missing {n}" for c, n in want.items() if not has(c, n)]
 for never in (nat_eip, "/e2e/has-retention", "e2e-stage-variable-secret", "e2e-lambda-env-secret-value", "e2e-ecs-env-secret-value"):
@@ -260,7 +280,11 @@ moto_gaps = {"ec2:DescribeFastSnapshotRestores", "ec2:DescribeImageReferences", 
              "globalaccelerator:ListAccelerators",  # nor Global Accelerator
              "cloudwatch:DescribeAlarms", "route53:ListTrafficPolicyInstances",  # CBOR for CloudWatch; no traffic policies in moto
              "ec2:DescribeCapacityReservations",  # moto answers Capacity Reservation calls with a 500
-             "dms:DescribeReplicationConfigs"}  # nor DMS Serverless configurations (a 500)
+             "kinesis:DescribeAccountSettings",  # moto lacks Kinesis account settings
+             "dms:DescribeReplicationConfigs",  # nor DMS Serverless configurations (a 500)
+             "fsx:DescribeVolumes",  # moto fsx has create/describe/delete file systems and backups, not volumes
+             "fsx:DescribeDataRepositoryAssociations",  # moto fsx has no data repository associations
+             "rolesanywhere:ListTrustAnchors"}  # moto has no IAM Roles Anywhere
 # Without ListCapabilities the planted empty EKS cluster stays unknown here (unit tests cover it);
 # the one with a node group must still stay quiet.
 unexpected = [x for x in r["skipped"] if x["what"] not in moto_gaps]
@@ -329,8 +353,8 @@ if [ -f "$SIGNKEY" ]; then
   mkdir -p .e2e/tf
   printf '%s\n' '{"version": 4, "resources": [{"mode": "managed", "type": "aws_dynamodb_table", "name": "orders", "instances": [{"attributes": {"id": "e2e-orders", "arn": "arn:aws:dynamodb:eu-west-1:123456789012:table/e2e-orders", "e2e_secret": "e2e-tf-secret-value"}}]}]}' > .e2e/tf/prod.tfstate
   "$BIN" -regions $R -license "$KEY" -usage-days 0 -json -html .e2e/report.html -ics .e2e/cliffs.ics -tf-state .e2e/tf -history-dir "$HIST" -snapshot-age 0 -stopped-days 0 -min-log-gib 0 -min-usd 0 > .e2e/report-team.json 2> .e2e/team.err
-  rm -f .e2e/redact.key .e2e/redact-map.json
-  "$BIN" -regions $R -license "$KEY" -usage-days 0 -json -redact -redact-key .e2e/redact.key -redact-map .e2e/redact-map.json -no-history \
+  rm -f .e2e/redact.key .e2e/redact-map.json .e2e/report-full.json
+  "$BIN" -regions $R -license "$KEY" -usage-days 0 -json -redact -redact-full .e2e/report-full.json -redact-key .e2e/redact.key -redact-map .e2e/redact-map.json -no-history \
     -snapshot-age 0 -stopped-days 0 -min-log-gib 0 -min-usd 0 > .e2e/report-redacted.json 2> .e2e/redact.err || true # a refusal is reported below
   # Signed: a key of our own, a signed redacted copy, verify it, then a tampered copy must fail.
   rm -f .e2e/keys/report-signing.key .e2e/keys/report-signing.pub .e2e/signed.json .e2e/signed.json.sig
@@ -341,7 +365,7 @@ if [ -f "$SIGNKEY" ]; then
   sed 's/"total_monthly_usd": *[0-9.]*/"total_monthly_usd": 1/' .e2e/signed.json > .e2e/tampered.json && cp .e2e/signed.json.sig .e2e/tampered.json.sig
   "$BIN" verify -key .e2e/keys/report-signing.pub .e2e/tampered.json > .e2e/verify-bad.out 2>&1 && echo 0 > .e2e/verify-bad.code || echo $? > .e2e/verify-bad.code
   python3 - "$TRANSFER" "$DMS" <<'PY'
-import json, os, sys
+import hashlib, json, os, sys
 transfer, dms = sys.argv[1:]
 r = json.load(open(".e2e/report-team.json"))
 checks = {f["check"] for f in r["findings"]}
@@ -362,6 +386,10 @@ known = {"cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "cost-optimizatio
          "dms:DescribeReplicationConfigs",  # no DMS Serverless configurations
          "dms:DescribeReplications",  # no DMS Serverless runtime state
          "transfer:ListUsers",  # Moto can create users but cannot list them
+         "kinesis:DescribeAccountSettings",  # moto lacks Kinesis account settings
+         "fsx:DescribeVolumes",  # moto fsx has create/describe/delete file systems and backups, not volumes
+         "fsx:DescribeDataRepositoryAssociations",  # moto fsx has no data repository associations
+         "rolesanywhere:ListTrustAnchors",  # moto has no IAM Roles Anywhere
          # no reservations in moto (Team: commitments-expiring)
          "ec2:DescribeReservedInstances", "rds:DescribeReservedDBInstances", "elasticache:DescribeReservedCacheNodes",
          "es:DescribeReservedInstances", "redshift:DescribeReservedNodes", "savingsplans:DescribeSavingsPlans",
@@ -374,7 +402,7 @@ if other:
     bad.append(f"unexpected skips: {other}")
 calls = r.get("run", {}).get("calls", [])
 read_ok = {c["operation"] for c in calls if c["outcome"] == "ok"}
-for op in ("ListServers", "DescribeServer", "ListResolverEndpoints", "DescribeReplicationInstances", "DescribeReplicationTasks"):
+for op in ("ListServers", "DescribeServer", "ListResolverEndpoints", "DescribeReplicationInstances", "DescribeReplicationTasks", "DescribeFileSystems"):
     if op not in read_ok:
         bad.append(f"expected the SDK inventory read {op} to succeed")
 if not any(c["operation"] == "ListUsers" for c in calls):
@@ -398,10 +426,12 @@ for secret in (b"e2e-hive-secret-value", b"e2e-step-secret-value", b"e2e-kdc-sec
 ics = open(".e2e/cliffs.ics", "rb").read() if os.path.exists(".e2e/cliffs.ics") else b""
 if not ics.startswith(b"BEGIN:VCALENDAR\r\n") or not ics.endswith(b"END:VCALENDAR\r\n") or ics.count(b"BEGIN:VEVENT") < len(r.get("upcoming") or []):
     bad.append(f"-ics: not a calendar of the {len(r.get('upcoming') or [])} upcoming cliff(s): {ics[:80]!r}")
-# -redact: no planted name or ID may survive, and the tokens map back.
+# -redact: no planted name or ID may survive, the tokens map back,
+# and the commitment matches the full report's bytes.
 import re
 red = open(".e2e/report-redacted.json").read()
 rj = json.loads(red) if red.strip() else {}
+full_bytes = open(".e2e/report-full.json", "rb").read() if os.path.exists(".e2e/report-full.json") else b""
 # Every planted name or ID the full report shows: in resources, and in facts
 # (which also name what a summing-up finding's text lists).
 plain = {"window_days", "max_bytes", "state", "engine", "node_type", "nodes", "instance_type", "instances", "brokers",
@@ -422,10 +452,14 @@ for f in r["findings"] + (r.get("upcoming") or []):
 leaked = sorted(n for n in names if n in red)
 if not rj or leaked or not rj.get("redaction", {}).get("commitment") or any(f.get("fix") or f.get("facts") for f in rj["findings"]):
     bad.append(f"redacted report: leaked {leaked[:5]}, commitment {rj.get('redaction')}, {open('.e2e/redact.err').read()[-300:]}")
-elif len(rj["findings"]) != len(r["findings"]) or rj["total_monthly_usd"] != r["total_monthly_usd"]:
-    bad.append("the redacted copy must keep every finding and the total")
-elif "123456789012" not in json.load(open(".e2e/redact-map.json")).values():
-    bad.append("the redaction map must lead back to the account")
+elif not full_bytes or hashlib.sha256(full_bytes).hexdigest() != rj["redaction"]["commitment"]:
+    bad.append("the redacted copy's commitment must match the full report file")
+else:
+    full = json.loads(full_bytes)
+    if len(rj["findings"]) != len(full["findings"]) or rj["total_monthly_usd"] != full["total_monthly_usd"]:
+        bad.append("the redacted copy must keep every finding and the total")
+    if "123456789012" not in json.load(open(".e2e/redact-map.json")).values():
+        bad.append("the redaction map must lead back to the account")
 # Signed reports: the signed copy verifies; a changed one doesn't.
 ok_code, bad_code = open(".e2e/verify-ok.code").read().strip(), open(".e2e/verify-bad.code").read().strip()
 if "fingerprint" not in open(".e2e/keygen.out").read():

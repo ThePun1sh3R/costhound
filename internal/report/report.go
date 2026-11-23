@@ -13,6 +13,7 @@ import (
 
 	"github.com/ThePun1sh3R/costhound/internal/checks"
 	"github.com/ThePun1sh3R/costhound/internal/inventory"
+	"github.com/ThePun1sh3R/costhound/internal/license"
 )
 
 // PriceNote is printed with every report.
@@ -30,7 +31,8 @@ type Report struct {
 	Version         string           `json:"version"`
 	Plan            string           `json:"plan"` // "free" or "pro"
 	Account         string           `json:"account"`
-	Org             string           `json:"org,omitempty"` // the AWS Organization, when known
+	Org             string           `json:"org,omitempty"`     // the AWS Organization, when known
+	OrgHub          bool             `json:"org_hub,omitempty"` // this run read the Organization's Cost Optimization Hub
 	ScannedAt       time.Time        `json:"scanned_at"`
 	Regions         []string         `json:"regions"`
 	TotalMonthlyUSD float64          `json:"total_monthly_usd"`
@@ -45,6 +47,11 @@ type Report struct {
 	// diff uses it to tell a disk left alone while its instance is stopped
 	// from a fixed one. Left out of redacted copies.
 	Stopped []string `json:"stopped_instances,omitempty"`
+	// EKSClusters: every EKS cluster this run listed, as
+	// "<account>|<region>|<name>" (account empty in a one-account report). The
+	// diff uses it to keep a Karpenter finding while its cluster exists.
+	// Left out of redacted copies.
+	EKSClusters []string `json:"eks_clusters,omitempty"`
 	// Parked: findings of earlier runs whose resource still exists but a
 	// check couldn't judge this run (an Auto Scaling group scaled to zero), as
 	// "<account>|<region>|<check>|<key>". Neither fixed nor new, and not in
@@ -150,13 +157,13 @@ func (r *Report) Text(w io.Writer, showFix bool) {
 	}
 
 	if r.Redaction != nil {
-		p("Redacted copy: %s\nCommitment (SHA-256 of the full report): %s\n\n", r.Redaction.Note, r.Redaction.Commitment)
+		p("Redacted copy: %s\nSHA-256 of the full report (the file -redact-full saves): %s\n\n", r.Redaction.Note, r.Redaction.Commitment)
 	}
 	if len(r.Findings) == 0 {
 		if line := r.Hidden.Line(); line != "" {
 			p("%s\n%s\n\n", r.Hidden.Nothing(), line)
 		} else {
-			p("No waste found by these checks. Nice.\n\n")
+			p("No waste found by these checks.\n\n")
 		}
 	} else {
 		p("Estimated waste: %s / month  (about %s / year)\n", Money(r.TotalMonthlyUSD), Money(r.TotalMonthlyUSD*12))
@@ -240,18 +247,29 @@ func (r *Report) Text(w io.Writer, showFix bool) {
 	r.writeRun(w)
 	if r.Plan == "free" {
 		if more := checks.NotIncluded("free"); len(more) > 0 {
-			var names []string
+			var pro, team []string
 			for _, c := range more {
-				names = append(names, c.Title)
+				if c.Plan == license.PlanTeam {
+					team = append(team, c.Title)
+				} else {
+					pro = append(pro, c.Title)
+				}
 			}
-			p("costhound Pro also checks: %s.\n", strings.Join(names, "; "))
+			p("costhound Pro also checks: %s.\n", strings.Join(pro, "; "))
+			if len(team) > 0 {
+				p("costhound Team adds: %s.\n", strings.Join(team, "; "))
+			}
 		}
-		p("costhound Pro also writes each fix as a script to review and run, with a backup first and a rollback (costhound plan).\n\n")
+		p("costhound Pro also writes each fix as a script to review and run, with a backup where AWS allows one, and a rollback (costhound plan).\n\n")
 	} else if len(r.Findings) > 0 {
-		p("Fix scripts to review and run, each with a backup first and a rollback: costhound plan -out <new folder>\n\n")
+		p("Fix scripts to review and run, with a backup where AWS allows one, and a rollback: costhound plan -out <new folder>\n\n")
 	}
 
-	p("%s\n%s\n", PriceNote, SafetyNote)
+	note := r.PriceNote
+	if note == "" {
+		note = PriceNote
+	}
+	p("%s\n%s\n", note, SafetyNote)
 }
 
 func (r *Report) summary(w io.Writer) {
@@ -275,6 +293,10 @@ func (r *Report) summary(w io.Writer) {
 		x.usd += f.MonthlyUSD
 		x.priced = x.priced || f.Priced
 	}
+	width := 46 // the title column grows to the longest title shown
+	for id := range rows {
+		width = max(width, len(checks.Title(id)))
+	}
 	fmt.Fprintf(w, "By check:\n")
 	for _, id := range order {
 		x, ok := rows[id]
@@ -285,11 +307,11 @@ func (r *Report) summary(w io.Writer) {
 		if x.priced {
 			amount = Money(x.usd) + "/mo"
 		}
-		fmt.Fprintf(w, "  %-46s %4d  %14s\n", checks.Title(id), x.n, amount)
+		fmt.Fprintf(w, "  %-*s %4d  %14s\n", width, checks.Title(id), x.n, amount)
 	}
 	fmt.Fprintln(w)
 	if owners := ByOwner(r.Findings); len(owners) > 0 {
-		fmt.Fprintf(w, "By owner (from owner tags):\n")
+		fmt.Fprintf(w, "By owner:\n")
 		const most = 15
 		for i, o := range owners {
 			if i == most {
@@ -456,7 +478,7 @@ func orNone(s string) string {
 // Free runs (no sources) keep the built-in note.
 func PriceNoteFor(sources map[string]string) string {
 	if len(sources) == 0 {
-		return PriceNote + " costhound Pro uses each region's real prices from the AWS Price List."
+		return PriceNote + " costhound Pro uses each region's own list prices from the AWS Price List."
 	}
 	var builtin []string
 	fetched := ""

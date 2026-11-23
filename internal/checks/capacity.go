@@ -118,7 +118,7 @@ func unusedCR(r *inventory.Region, o Options, cr inventory.CapacityReservation) 
 			f.Detail += " (at least: the us-east-1 shared Linux rate; this region, platform or tenancy may cost more)"
 		}
 		if hours < pricing.HoursPerMonth {
-			f.Detail += fmt.Sprintf(" for the %.0f hours it has left", hours)
+			f.Detail += fmt.Sprintf(", counting only the %.0f hours it has left", hours)
 		}
 	}
 	if committed && units > 0 && units < unused {

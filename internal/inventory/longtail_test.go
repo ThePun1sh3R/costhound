@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -510,6 +511,61 @@ func TestLoadLBTags(t *testing.T) {
 	loadLBTags(context.Background(), lbs, &fakeLBTags{fail: true}, func(what string, _ error) { skips = append(skips, what) })
 	if !lbs[0].TagsUnknown || len(skips) != 1 || skips[0] != "elasticloadbalancing:DescribeTags" {
 		t.Errorf("a failed tag read is unknown and a skip: %+v %v", lbs, skips)
+	}
+}
+
+type fakeLBRules struct {
+	listenerCalls []string
+	failRules     bool
+}
+
+func (f *fakeLBRules) DescribeListeners(_ context.Context, in *elbv2.DescribeListenersInput, _ ...func(*elbv2.Options)) (*elbv2.DescribeListenersOutput, error) {
+	arn := aws.ToString(in.LoadBalancerArn)
+	f.listenerCalls = append(f.listenerCalls, arn)
+	fwd := []elbv2types.Action{{Type: elbv2types.ActionTypeEnumForward}}
+	switch arn {
+	case "arn:lb/redirect": // the default action redirects (HTTP to HTTPS)
+		return &elbv2.DescribeListenersOutput{Listeners: []elbv2types.Listener{{ListenerArn: aws.String("l-redirect"),
+			DefaultActions: []elbv2types.Action{{Type: elbv2types.ActionTypeEnumRedirect}}}}}, nil
+	case "arn:lb/rule-fixed": // forwards by default, a rule answers; an OIDC login with its secret
+		return &elbv2.DescribeListenersOutput{Listeners: []elbv2types.Listener{{ListenerArn: aws.String("l-fixed"),
+			DefaultActions: []elbv2types.Action{{Type: elbv2types.ActionTypeEnumAuthenticateOidc,
+				AuthenticateOidcConfig: &elbv2types.AuthenticateOidcActionConfig{ClientSecret: aws.String("planted-oidc-client-secret")}}, fwd[0]}}}}, nil
+	}
+	return &elbv2.DescribeListenersOutput{Listeners: []elbv2types.Listener{{ListenerArn: aws.String("l-" + arn), DefaultActions: fwd}}}, nil
+}
+
+func (f *fakeLBRules) DescribeRules(_ context.Context, in *elbv2.DescribeRulesInput, _ ...func(*elbv2.Options)) (*elbv2.DescribeRulesOutput, error) {
+	if f.failRules {
+		return nil, &smithy.GenericAPIError{Code: "AccessDenied"}
+	}
+	if aws.ToString(in.ListenerArn) == "l-fixed" {
+		return &elbv2.DescribeRulesOutput{Rules: []elbv2types.Rule{{Actions: []elbv2types.Action{{Type: elbv2types.ActionTypeEnumFixedResponse,
+			FixedResponseConfig: &elbv2types.FixedResponseActionConfig{StatusCode: aws.String("200"), MessageBody: aws.String("planted-fixed-response-body")}}}}}}, nil
+	}
+	return &elbv2.DescribeRulesOutput{Rules: []elbv2types.Rule{{Actions: []elbv2types.Action{{Type: elbv2types.ActionTypeEnumForward}}}}}, nil
+}
+
+func TestLoadLBListeners(t *testing.T) {
+	lbs := []LoadBalancer{{ARN: "arn:lb/busy", Type: "application", Targets: 2}, {ARN: "arn:lb/nlb", Type: "network"},
+		{ARN: "arn:lb/redirect", Type: "application"}, {ARN: "arn:lb/rule-fixed", Type: "application"}, {ARN: "arn:lb/idle", Type: "application", TargetGroups: 1}}
+	c := &fakeLBRules{}
+	loadLBListeners(context.Background(), lbs, c, func(what string, _ error) { t.Errorf("no skip expected: %s", what) })
+	if strings.Join(c.listenerCalls, ",") != "arn:lb/redirect,arn:lb/rule-fixed,arn:lb/idle" {
+		t.Errorf("only ALBs with no targets are read: %v", c.listenerCalls)
+	}
+	if lbs[2].Responds != 1 || lbs[3].Responds != 1 || lbs[4].Responds != 0 || lbs[0].Responds != 0 || lbs[1].Responds != 0 {
+		t.Errorf("listeners that answer: %+v", lbs)
+	}
+	if b, _ := json.Marshal(lbs); strings.Contains(string(b), "planted") {
+		t.Errorf("only action types are kept: %s", b)
+	}
+	// A failed read leaves that one and the rest unknown, with one skip line.
+	lbs = []LoadBalancer{{ARN: "arn:lb/idle", Type: "application"}, {ARN: "arn:lb/idle-2", Type: "application"}}
+	var skips []string
+	loadLBListeners(context.Background(), lbs, &fakeLBRules{failRules: true}, func(what string, _ error) { skips = append(skips, what) })
+	if !lbs[0].ListenersUnknown || !lbs[1].ListenersUnknown || len(skips) != 1 || skips[0] != "elasticloadbalancing:DescribeRules" {
+		t.Errorf("a failed read is unknown, one skip: %+v %v", lbs, skips)
 	}
 }
 

@@ -191,7 +191,7 @@ func gravitonFinding(r *inventory.Region, o Options, moves []gravitonMove, asg s
 		f.Key = "asg/" + asg
 		f.Members = ids
 		f.Facts = facts("asg", asg, "instances", itoa(n), "sample", ids[0], "from_type", strings.Join(froms, ", "), "to_type", strings.Join(tos, ", "))
-		f.Detail = fmt.Sprintf("%d instance(s) of Auto Scaling group %s on the same-size Graviton type: %s", n, asg, strings.Join(details, "; "))
+		f.Detail = fmt.Sprintf("%d instance(s) of Auto Scaling group %s could move to the same-size Graviton type: %s", n, asg, strings.Join(details, "; "))
 		f.Evidence = append([]string{fmt.Sprintf("EC2 DescribeInstances: %d running instance(s) of Auto Scaling group %s, x86_64, Linux/UNIX On-Demand", n, asg)}, f.Evidence...)
 		f.Fix = []string{
 			"# every program on its instances needs an arm64 build: an arm64 AMI, arm64 container images, native libraries",

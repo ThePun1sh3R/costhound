@@ -86,6 +86,12 @@ func (c Claims) Scope() string {
 	return strings.Join(parts, " and ")
 }
 
+// RenewURL is where to buy or renew a key.
+const RenewURL = "https://costhound.dev"
+
+// WarnWithin is how soon before Expires a run prints ExpiryWarning.
+const WarnWithin = 7 * 24 * time.Hour
+
 var (
 	ErrMalformed = errors.New("this isn't a costhound license key (it should start with " + Prefix + ")")
 	ErrSignature = errors.New("the license key doesn't check out (a typo, or not issued for costhound)")
@@ -127,9 +133,31 @@ func Verify(key string, pub ed25519.PublicKey, now time.Time) (Claims, error) {
 		return Claims{}, ErrPlan
 	}
 	if c.Expires != 0 && now.Unix() >= c.Expires {
-		return c, ErrExpired
+		end := time.Unix(c.Expires, 0).UTC().Format("2006-01-02")
+		return c, fmt.Errorf("%w: it ended on %s; renew at %s", ErrExpired, end, RenewURL)
 	}
 	return c, nil
+}
+
+// ExpiryWarning is the one stderr line when a paid key ends within WarnWithin,
+// or "" when there is nothing to say (no end, more than WarnWithin left, or
+// already expired). Callers print it before a scan; it never goes to stdout.
+func ExpiryWarning(c Claims, now time.Time) string {
+	if c.Expires == 0 {
+		return ""
+	}
+	end := time.Unix(c.Expires, 0).UTC()
+	left := end.Sub(now)
+	if left <= 0 || left > WarnWithin {
+		return ""
+	}
+	days := int((left + 24*time.Hour - 1) / (24 * time.Hour)) // rounded up: the last day says 1, not 0
+	plan := c.Plan
+	if plan != "" {
+		plan = strings.ToUpper(plan[:1]) + plan[1:]
+	}
+	return fmt.Sprintf("costhound: your %s key ends on %s (in %d day(s)): renew at %s",
+		plan, end.Format("2006-01-02"), days, RenewURL)
 }
 
 // Find returns the license key to use and where it came from, looking at, in

@@ -22,8 +22,7 @@ type RunInfo struct {
 
 // RedactInfo marks a copy made for sharing outside the account (-redact).
 type RedactInfo struct {
-	// Commitment is the SHA-256 of the full report as JSON: whoever holds the
-	// full report can later show this copy came from it.
+	// Commitment is the SHA-256 of the full report's JSON bytes as written by -redact-full.
 	Commitment string `json:"commitment"`
 	Note       string `json:"note"`
 }

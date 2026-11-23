@@ -24,7 +24,7 @@ func TestReadmeListsEveryCheckAndFlag(t *testing.T) {
 	}
 	for _, f := range []string{"profile", "regions", "json", "no-fix", "min-usd", "snapshot-age", "stopped-days", "secret-days",
 		"min-log-gib", "concurrency", "timeout", "license", "html", "usage-days", "min-ingest-gib", "no-history", "history-dir",
-		"org", "org-role", "org-accounts", "slack-webhook", "fail-over", "fail-on-new", "fail-on-unowned", "redact", "redact-key", "redact-map", "sign", "sign-key", "ics", "tf-state", "ignore-file",
+		"org", "org-role", "org-accounts", "slack-webhook", "fail-over", "fail-on-new", "fail-on-unowned", "redact", "redact-full", "redact-key", "redact-map", "sign", "sign-key", "ics", "tf-state", "ignore-file",
 		"out", "from", "account", "only", "checks", "min-confidence"} { // the last row: costhound plan
 		if !strings.Contains(readme, "`-"+f+"`") {
 			t.Errorf("README flag table misses -%s", f)

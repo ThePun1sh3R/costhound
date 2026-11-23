@@ -237,12 +237,12 @@ func UnusedAMIs(r *inventory.Region, o Options) []Finding {
 		case unsure != "":
 			f.Confidence, f.Why = "low", unsure
 			if gib > 0 {
-				f.Detail += fmt.Sprintf("; up to %s/month, not added to the total: %s", money(cost), unsure)
+				f.Detail += fmt.Sprintf("; up to %s a month, not added to the total: %s", money(cost), unsure)
 			}
 		case whole && gib > 0:
 			f.MonthlyUSD, f.Priced = cost, true
 		case gib > 0:
-			f.Detail += fmt.Sprintf("; up to %s/month: other snapshots of the same disk stay, or another AMI shares one, so deleting these frees only what nothing else uses", money(cost))
+			f.Detail += fmt.Sprintf("; up to %s a month: other snapshots of the same disk stay, or another AMI shares one, so deleting these frees only what nothing else uses", money(cost))
 		}
 		out = append(out, f)
 	}
@@ -354,7 +354,7 @@ func DisabledKMSKeys(r *inventory.Region, o Options) []Finding {
 			},
 			Check: "disabled-kms-key", Region: r.Name, Resource: name, Key: k.ID,
 			Facts: facts("key", k.ID, "key_arn", k.ARN, "state", k.State, "versions", itoa(versions)),
-			Detail: fmt.Sprintf("customer managed key %s: it can't encrypt or decrypt, but its %d key version(s) are billed %s/month until it's scheduled for deletion (the 7-30 day wait is free)",
+			Detail: fmt.Sprintf("customer managed key %s: it can't encrypt or decrypt, but its %d key version(s) are billed %s a month until it's scheduled for deletion (the 7-30 day wait is free)",
 				why, versions, money(float64(versions)*pricing.KMSKeyVersionMonthly)),
 			MonthlyUSD: float64(versions) * pricing.KMSKeyVersionMonthly, Priced: true,
 			Fix: []string{
@@ -453,12 +453,12 @@ func RDSOrphanSnapshots(r *inventory.Region, o Options) []Finding {
 			}
 			f.Resource = fmt.Sprintf("%d snapshot copies of %s", len(g.old), g.source)
 			f.Confidence, f.Why = "low", "copies from another region or account are usually disaster-recovery or backup copies of a database that lives on"
-			f.Detail = fmt.Sprintf("%d manual snapshot copies (from %s) of %s %s %s, which doesn't run in this region: usually a disaster-recovery copy kept on purpose; up to %s/month",
+			f.Detail = fmt.Sprintf("%d manual snapshot copies (from %s) of %s %s %s, which doesn't run in this region: usually a disaster-recovery copy kept on purpose; up to %s a month",
 				len(g.old), from, orDash(g.engine), kind, g.source, money(cost))
 		case g.kept > 0:
 			f.Detail += fmt.Sprintf("; %d newer snapshot(s) of it are kept, so deleting these frees only what they don't share", g.kept)
 		case g.covered:
-			f.Detail += fmt.Sprintf("; up to %s/month (%d GiB at the us-east-1 rate of $%.3f/GB): the free backup allowance of the DB instances you still run here may cover part of it", money(cost), g.maxGiB, rate)
+			f.Detail += fmt.Sprintf("; up to %s a month (%d GiB at the us-east-1 rate of $%.3f/GB-month): the free backup allowance of the DB instances you still run here may cover part of it", money(cost), g.maxGiB, rate)
 			f.Confidence, f.Why = "low", "the database is gone, but final snapshots are often kept on purpose and the region's free backup allowance may cover them"
 		default:
 			f.MonthlyUSD, f.Priced = cost, true
@@ -556,7 +556,7 @@ func EmptyEKSClusters(r *inventory.Region, o Options) []Finding {
 			f.Fix = append(f.Fix, fmt.Sprintf("# aws eks update-cluster-config --region %s --name %s --no-deletion-protection", r.Name, c.Name))
 			del = "# " + del
 		case d >= 0 && d < 7:
-			f.Confidence, f.Why = "low", "created less than a week ago: it may still be being set up"
+			f.Confidence, f.Why = "low", "created less than a week ago: it may not be set up yet"
 			del = "# " + del
 		}
 		f.Fix = append(f.Fix, del)
@@ -647,7 +647,7 @@ func natNoRoutesReports(r *inventory.Region, n ec2types.NatGateway, o Options) b
 func waiveNAT(f *Finding) {
 	f.MonthlyUSD, f.Priced = 0, false
 	f.Evidence = append(f.Evidence, "Network Firewall endpoints in its VPC: AWS waives one NAT gateway hour for each endpoint hour")
-	f.Detail += "; a Network Firewall endpoint in its VPC waives its hourly charge, so deleting it saves nothing while that firewall stays (and frees its Elastic IP)"
+	f.Detail += "; a Network Firewall endpoint in its VPC waives its hourly charge, so deleting it saves nothing while that firewall stays, apart from its Elastic IP once you release it"
 }
 
 // lbMayRefill says why a load balancer with nothing behind it may only be
@@ -741,6 +741,10 @@ func RDSOldClass(r *inventory.Region, o Options) []Finding {
 			continue
 		}
 		if rdsLooksIdle(r, d, o) { // idle-rds's now: parked, not fixed
+			r.Unjudged = append(r.Unjudged, "rds-old-class|"+d.ID)
+			continue
+		}
+		if memberOfIdleDBCluster(r, d, o) { // idle-db-cluster's now: parked, not fixed
 			r.Unjudged = append(r.Unjudged, "rds-old-class|"+d.ID)
 			continue
 		}

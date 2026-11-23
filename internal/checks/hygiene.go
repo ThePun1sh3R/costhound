@@ -75,8 +75,8 @@ func PIOPSToGP3(r *inventory.Region, o Options) []Finding {
 		cmd := fmt.Sprintf("aws ec2 modify-volume --region %s --volume-id %s --volume-type gp3 --iops %d --throughput %d", r.Name, id, gIOPS, gThr)
 		f := Finding{
 			Check: "piops-to-gp3", Region: r.Name, Resource: label(id, v.Tags),
-			Detail: fmt.Sprintf("%s, %d GiB, %d IOPS: %s/mo now; gp3 with %d IOPS and %d MiB/s is %s/mo. Keep %s only if it needs sub-millisecond latency%s",
-				typ, size, iops, money(now), gIOPS, gThr, money(then), typ, map[bool]string{true: " or io2's 99.999% durability", false: ""}[typ == "io2"]),
+			Detail: fmt.Sprintf("%s, %d GiB, %d IOPS: %s a month now; gp3 with %d IOPS and %d MiB/s is %s a month. Keep %s only if it needs %s",
+				typ, size, iops, money(now), gIOPS, gThr, money(then), typ, map[bool]string{true: "sub-millisecond latency or 99.999% durability", false: "its IOPS delivered 99.9% of the time (gp3: 99%)"}[typ == "io2"]),
 			MonthlyUSD: now - then, Priced: true,
 			Fix: []string{cmd},
 			Facts: facts("volume", id, "from_type", typ, "from_iops", itoa(iops), "from_throughput", itoa(can), "size_gib", itoa(size),
@@ -94,7 +94,7 @@ func PIOPSToGP3(r *inventory.Region, o Options) []Finding {
 		// comment, after the reasons, when gp3 trades latency or throughput.
 		var asks []string
 		if iops > 16000 {
-			asks = append(asks, fmt.Sprintf("it has %d IOPS, and above 16,000 it's likely a database that relies on %s's sub-millisecond latency", iops, typ))
+			asks = append(asks, fmt.Sprintf("it has %d IOPS, and above 16,000 it's likely a database that relies on %s's steady performance", iops, typ))
 		}
 		if can > gThr {
 			asks = append(asks, fmt.Sprintf("gp3 gets %d MiB/s here, and it can deliver %d MiB/s", gThr, can))
@@ -103,7 +103,7 @@ func PIOPSToGP3(r *inventory.Region, o Options) []Finding {
 			f.Fix = []string{"# check the workload first: " + strings.Join(asks, "; and ") + ". AWS can't cancel the change once it starts", "# " + cmd}
 		}
 		if io2 := pb(r).EBSMonthly("io2", size, iops, 0); typ == "io1" && now-io2 >= 1 {
-			f.Detail += fmt.Sprintf("; or io2, the same latency class: %s/mo (%s less), online", money(io2), money(now-io2))
+			f.Detail += fmt.Sprintf("; or io2, as fast or faster: %s a month (%s less), changed online", money(io2), money(now-io2))
 		}
 		out = append(out, f)
 	}
@@ -133,7 +133,7 @@ func IO1ToIO2(r *inventory.Region, o Options) []Finding {
 		}
 		out = append(out, Finding{
 			Check: "io1-to-io2", Region: r.Name, Resource: label(id, v.Tags),
-			Detail: fmt.Sprintf("Multi-Attach io1, %d GiB, %d IOPS: %s/mo now; io2 with the same IOPS is %s/mo (the same price per GiB, less per IOPS above 32,000). AWS changes it online, even while attached",
+			Detail: fmt.Sprintf("Multi-Attach io1, %d GiB, %d IOPS: %s a month now; io2 with the same IOPS is %s a month (the same price per GiB, less per IOPS above 32,000). AWS changes it online, even while attached",
 				size, iops, money(now), money(then)),
 			MonthlyUSD: now - then, Priced: true,
 			Fix:   []string{fmt.Sprintf("aws ec2 modify-volume --region %s --volume-id %s --volume-type io2 --iops %d", r.Name, id, iops)},
@@ -300,7 +300,7 @@ func S3VersionsNoExpiry(r *inventory.Region, o Options) []Finding {
 			f.Detail = "bucket with versioning suspended that still keeps every old version it made, with no rule to expire them"
 		}
 		f.Detail += " (unpriced: their size isn't readable without S3 Inventory or a Storage Lens export)"
-		fix := []string{"# expiring old versions deletes them for good: this rule keeps the 3 newest and expires the rest 30 days after they're replaced"}
+		fix := []string{"# expiring old versions deletes them for good: this rule keeps the 3 newest old versions of each object and expires the rest 30 days after they're replaced"}
 		if b.HasLifecycle {
 			fix = append(fix, "# put-bucket-lifecycle-configuration REPLACES all rules: read them, add this rule, then put them all back",
 				fmt.Sprintf("aws s3api get-bucket-lifecycle-configuration --region %s --bucket %s > %s-rules.json", r.Name, b.Name, b.Name),
@@ -310,8 +310,8 @@ func S3VersionsNoExpiry(r *inventory.Region, o Options) []Finding {
 		}
 		switch {
 		case b.MFADelete:
-			f.Confidence, f.Why = "low", "MFA Delete is on, and S3 doesn't run lifecycle rules on such a bucket"
-			fix = []string{"# S3 doesn't run lifecycle rules on a bucket with MFA Delete: turning it off takes the root user's MFA device (put-bucket-versioning --mfa), or old versions are deleted by hand"}
+			f.Confidence, f.Why = "low", "MFA Delete is on, and S3 doesn't support lifecycle rules on such a bucket"
+			fix = []string{"# S3 doesn't support lifecycle rules on a bucket with MFA Delete: turning it off takes the root user's MFA device (put-bucket-versioning --mfa), or old versions are deleted by hand"}
 		case b.ObjectLock == "Enabled":
 			f.Confidence, f.Why = "low", "Object Lock is on: old versions may be kept on purpose, and locked ones can't be deleted before their retention ends"
 		case b.ObjectLock == "?":
@@ -360,7 +360,8 @@ func cacheGroups(r *inventory.Region) []cacheGroup {
 var oldCacheFamilies = map[string]bool{"t1": true, "t2": true, "m1": true, "m2": true, "m3": true, "m4": true, "r3": true, "r4": true, "c1": true}
 
 // OldCacheNodes finds ElastiCache clusters on previous-generation node types:
-// current generations (t4g, m7g, r7g, ...) are faster for the same or less.
+// current generations (t4g, m7g, r7g, ...) are faster for about the same
+// price or less (m7g costs about 1% more than m4 at the same size).
 func OldCacheNodes(r *inventory.Region, o Options) []Finding {
 	var out []Finding
 	for _, g := range cacheGroups(r) {
@@ -370,7 +371,7 @@ func OldCacheNodes(r *inventory.Region, o Options) []Finding {
 		}
 		out = append(out, Finding{
 			Check: "old-cache-nodes", Region: r.Name, Resource: g.Name, TagRef: cacheRef(g.Name, g.ReplicationGroup),
-			Detail: fmt.Sprintf("%s %s on %d x %s, a previous-generation node type: Graviton nodes (t4g, m7g, r7g) cost the same or less and are faster", g.Engine, g.Version, g.Nodes, g.NodeType),
+			Detail: fmt.Sprintf("%s %s on %d x %s, a previous-generation node type: Graviton nodes (t4g, m7g, r7g) are faster for about the same price or less", g.Engine, g.Version, g.Nodes, g.NodeType),
 			Fix:    []string{"# change the node type during a maintenance window; test on a copy first"},
 		})
 	}
@@ -395,9 +396,9 @@ func DynamoDBNoAutoScaling(r *inventory.Region, o Options) []Finding {
 		}
 		out = append(out, Finding{
 			Check: "dynamodb-no-autoscaling", Region: r.Name, Resource: t.Name,
-			Detail: fmt.Sprintf("provisioned %d RCU / %d WCU (indexes included), about %s/month, with no auto scaling: it pays for its peak all day", t.RCU, t.WCU, money(cost)),
+			Detail: fmt.Sprintf("provisioned %d RCU / %d WCU (indexes included), about %s a month, with no auto scaling: it pays for its peak all day", t.RCU, t.WCU, money(cost)),
 			Fix: []string{
-				"# spiky or low traffic: on-demand bills only what is used (the mode can change once a day)",
+				"# spiky or low traffic: on-demand bills only what is used (a table can switch to on-demand 4 times in 24 hours, and back to provisioned any time)",
 				fmt.Sprintf("aws dynamodb update-table --region %s --table-name %s --billing-mode PAY_PER_REQUEST", r.Name, t.Name),
 			},
 			Facts: facts("table", t.Name, "indexes", strings.Join(t.Indexes, " ")),
@@ -489,7 +490,7 @@ func BackupOrphans(r *inventory.Region, o Options) []Finding {
 		gb := float64(g.bytes) / bytesPerGiB
 		out = append(out, Finding{
 			Check: "backup-orphans", Region: r.Name, Resource: res + " (deleted)",
-			Detail: fmt.Sprintf("%d recovery point(s) in vault %s, %.0f GB, from %s to %s, for a resource that no longer exists: about %s/month. Keep them if you need them; otherwise give the backup plan a retention rule",
+			Detail: fmt.Sprintf("%d recovery point(s) in vault %s, %.0f GB, from %s to %s, for a resource that no longer exists: about %s a month. Keep them if you need them; otherwise give the backup plan a retention rule",
 				g.points, g.vault, gb, dateOf(g.oldest), dateOf(g.newst), money(gb*pricing.BackupEBSGBMonth)),
 			Fix: []string{fmt.Sprintf("aws backup list-recovery-points-by-resource --region %s --resource-arn <arn of %s>", r.Name, res)},
 		})
@@ -536,7 +537,7 @@ func efsFinding(check, region string, f inventory.FileSystem, cost float64, why 
 	total := float64(f.Standard+f.IA+f.Archive) / bytesPerGiB
 	return Finding{
 		Check: check, Region: region, Resource: name,
-		Detail:     fmt.Sprintf("%s; %.0f GB stored, %s/month", why, total, money(cost)),
+		Detail:     fmt.Sprintf("%s; %.0f GB stored, %s a month", why, total, money(cost)),
 		MonthlyUSD: cost, Priced: true,
 		Fix: []string{
 			"# back it up first if the data may be needed (AWS Backup or a copy)",

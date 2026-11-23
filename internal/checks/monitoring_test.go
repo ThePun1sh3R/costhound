@@ -100,9 +100,12 @@ func TestDetailedMonitoring(t *testing.T) {
 	}
 	// A launcher that replaces its instances: one finding, fixed in its setting, never a runnable command.
 	k := got["karpenter/default"]
-	if len(k.Members) != 2 || k.Resource != "default (Karpenter node pool)" || k.Facts["launched_by"] != "karpenter" || k.Facts["group"] != "default" ||
+	if len(k.Members) != 2 || k.Resource != "default (Karpenter node pool)" || k.Facts["launched_by"] != "karpenter" || k.Facts["launcher"] != "karpenter" || k.Facts["group"] != "default" ||
 		!near(k.MonthlyUSD, 1.40) || len(k.Fix) != 1 || !strings.Contains(k.Fix[0], "spec.detailedMonitoring: false in its EC2NodeClass") || !strings.HasPrefix(k.Fix[0], "# ") {
 		t.Errorf("a Karpenter node pool: %+v", k)
+	}
+	if w := got["asg/web"]; w.Facts["launcher"] != "asg" {
+		t.Errorf("a group finding names its launcher kind: %+v", w)
 	}
 	if s := got["spot-fleet/sfr-0123"]; s.Resource != "sfr-0123 (Spot Fleet)" || !strings.Contains(s.Fix[0], "launch specification") {
 		t.Errorf("a Spot Fleet: %+v", s)
@@ -122,6 +125,88 @@ func TestDetailedMonitoring(t *testing.T) {
 		if f.Key == "i-alone" && (f.Confidence != "low" || !strings.HasPrefix(f.Fix[0], "# ") || f.Facts["alarms_unread"] != "yes") {
 			t.Errorf("unread alarms: low, the command commented: %+v", f)
 		}
+	}
+}
+
+// A listed launcher with no running instance is unjudged (its setting may
+// turn monitoring on at the next scale-out). One with a running unmonitored
+// instance, or not listed, is not: the real fix, or deleted.
+func TestDetailedMonitoringLauncherParked(t *testing.T) {
+	run := ec2types.InstanceStateNameRunning
+	arn := "arn:aws:batch:eu-west-1:111111111111:compute-environment/jobs"
+	r := &inventory.Region{Name: "eu-west-1",
+		ASGNames: []string{"scaled-to-zero", "still-running"}, // gone-from-list: deleted, not listed
+		EC2Fleets: []inventory.EC2Fleet{
+			{ID: "fleet-zero", State: "active", Type: "maintain"},
+			{ID: "fleet-instant", State: "active", Type: "instant"},
+			{ID: "fleet-running", State: "active", Type: "maintain"},
+			{ID: "fleet-deleted", State: "deleted", Type: "maintain"},
+		},
+		SpotFleets: []inventory.SpotFleet{
+			{ID: "sfr-zero", State: "active"},
+			{ID: "sfr-running", State: "modifying"},
+			{ID: "sfr-cancelled", State: "cancelled"},
+		},
+		BatchCEs: []inventory.BatchCE{
+			{Name: "jobs", ARN: arn, Type: "MANAGED", State: "ENABLED", Status: "VALID", ResourceType: "EC2"},
+			{Name: "spot-jobs", ARN: "arn:aws:batch:eu-west-1:111111111111:compute-environment/spot-jobs", Type: "MANAGED", State: "DISABLED", Status: "VALID", ResourceType: "SPOT"},
+			{Name: "fargate", ARN: "arn:aws:batch:eu-west-1:111111111111:compute-environment/fargate", Type: "MANAGED", State: "ENABLED", Status: "VALID", ResourceType: "FARGATE"},
+			{Name: "deleted", ARN: "arn:aws:batch:eu-west-1:111111111111:compute-environment/deleted", Type: "MANAGED", State: "ENABLED", Status: "DELETED", ResourceType: "EC2"},
+			{Name: "busy", ARN: "arn:aws:batch:eu-west-1:111111111111:compute-environment/busy", Type: "MANAGED", State: "ENABLED", Status: "VALID", ResourceType: "EC2"},
+		},
+		Instances: []ec2types.Instance{
+			inGroup(inst("i-asg-basic", "m5.large", run, ""), "still-running"), // unmonitored: the fix
+			tagged(inst("i-fleet-basic", "m5.large", run, ""), "aws:ec2:fleet-id", "fleet-running"),
+			tagged(inst("i-sfr-basic", "m5.large", run, ""), "aws:ec2spot:fleet-request-id", "sfr-running"),
+			tagged(inst("i-batch-basic", "m5.large", run, ""), "aws:batch:compute-environment", "busy"),
+			func() ec2types.Instance {
+				in := tagged(withMonitoring(inst("i-kp", "m5.large", run, "")), "karpenter.sh/nodepool", "default")
+				in.Tags = append(in.Tags, ec2types.Tag{Key: aws.String("kubernetes.io/cluster/prod"), Value: aws.String("owned")})
+				return in
+			}(),
+		},
+	}
+	_ = DetailedMonitoring(r, opts())
+	got := strings.Join(r.Unjudged, " ")
+	for _, want := range []string{
+		"ec2-detailed-monitoring|asg/scaled-to-zero",
+		"ec2-detailed-monitoring|ec2-fleet/fleet-zero",
+		"ec2-detailed-monitoring|spot-fleet/sfr-zero",
+		"ec2-detailed-monitoring|batch/jobs",
+		"ec2-detailed-monitoring|batch/" + arn,
+		"ec2-detailed-monitoring|batch/spot-jobs",
+		"ec2-detailed-monitoring|batch/arn:aws:batch:eu-west-1:111111111111:compute-environment/spot-jobs",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("want parked %q in %q", want, got)
+		}
+	}
+	for _, no := range []string{
+		"asg/still-running", "asg/gone-from-list",
+		"ec2-fleet/fleet-instant", "ec2-fleet/fleet-running", "ec2-fleet/fleet-deleted",
+		"spot-fleet/sfr-running", "spot-fleet/sfr-cancelled",
+		"batch/fargate", "batch/deleted", "batch/busy",
+	} {
+		if strings.Contains(got, no) {
+			t.Errorf("must not park %q in %q", no, got)
+		}
+	}
+	fs := DetailedMonitoring(&inventory.Region{Name: "eu-west-1", Instances: r.Instances}, opts())
+	var kp Finding
+	for _, f := range fs {
+		if f.Key == "karpenter/default" {
+			kp = f
+		}
+	}
+	if kp.Facts["eks_cluster"] != "prod" || kp.Facts["launcher"] != "karpenter" {
+		t.Errorf("Karpenter carries eks_cluster from the tag key: %+v", kp)
+	}
+	// eks:eks-cluster-name when the kubernetes.io tag is absent.
+	in := tagged(withMonitoring(inst("i-kp2", "m5.large", run, "")), "karpenter.sh/nodepool", "gpu")
+	in.Tags = append(in.Tags, ec2types.Tag{Key: aws.String("eks:eks-cluster-name"), Value: aws.String("staging")})
+	fs = DetailedMonitoring(&inventory.Region{Name: "eu-west-1", Instances: []ec2types.Instance{in}}, opts())
+	if fs[0].Facts["eks_cluster"] != "staging" {
+		t.Errorf("eks:eks-cluster-name: %+v", fs[0])
 	}
 }
 

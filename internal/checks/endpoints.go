@@ -44,7 +44,7 @@ func PaidS3Endpoint(r *inventory.Region, o Options) []Finding {
 		short := svc[strings.LastIndex(svc, ".")+1:]
 		out = append(out, Finding{
 			Check: "paid-s3-endpoint", Region: r.Name, Resource: aws.ToString(e.VpcEndpointId),
-			Detail: fmt.Sprintf("interface endpoint for %s in %s (%d AZ(s), plus $0.01/GB): a gateway endpoint does the same for free for traffic from inside the VPC. Keep it only if on-premises or other-VPC clients use it",
+			Detail: fmt.Sprintf("interface endpoint for %s in %s (billed in %d AZ(s), plus $0.01/GB of data): a gateway endpoint does the same for free for traffic from inside the VPC. Keep it only if on-premises or other-VPC clients use it",
 				short, vpc, azs),
 			MonthlyUSD: float64(azs) * pb(r).EndpointAZMonthly(), Priced: true,
 			Fix: []string{

@@ -70,6 +70,7 @@ func TestLoadDMSReadsOnlyDecisionFields(t *testing.T) {
 			return &dms.DescribeReplicationConfigsOutput{ReplicationConfigs: []dmstypes.ReplicationConfig{
 				{ReplicationConfigArn: aws.String("config-a"), ReplicationConfigIdentifier: aws.String("retired"), ReplicationSettings: aws.String(discard)},
 				{ReplicationConfigArn: aws.String("config-b"), ReplicationConfigIdentifier: aws.String("never-started")},
+				{ReplicationConfigArn: aws.String("arn:aws:dms:eu-west-1:123456789012:replication-config:NOIDENT123")}, // no identifier
 			}}, nil
 		},
 		states: func(*dms.DescribeReplicationsInput) (*dms.DescribeReplicationsOutput, error) {
@@ -81,7 +82,7 @@ func TestLoadDMSReadsOnlyDecisionFields(t *testing.T) {
 	r := &Region{}
 	loadDMS(t.Context(), r, c, func(op string, _ error) { t.Errorf("unexpected skip %s", op) })
 	d := r.DMS
-	if !slices.Equal(pages, []string{"", "next"}) || len(d.Instances) != 2 || len(d.Serverless) != 2 {
+	if !slices.Equal(pages, []string{"", "next"}) || len(d.Instances) != 2 || len(d.Serverless) != 3 {
 		t.Fatalf("incomplete DMS inventory, pages = %v", pages)
 	}
 	if !d.Instances[0].Created.Equal(created) || !aws.ToBool(d.Instances[1].MultiAZ) ||
@@ -89,6 +90,9 @@ func TestLoadDMSReadsOnlyDecisionFields(t *testing.T) {
 		len(d.Tasks["rep-b"]) != 1 || d.Tasks["rep-b"][0].Status != "" ||
 		d.Serverless[0].Status != "stopped" || d.Serverless[1].Status != "" {
 		t.Fatal("incorrect task stop date, pending move or Serverless state")
+	}
+	if d.Serverless[2].ID != "NOIDENT123" {
+		t.Errorf("a configuration listed without its identifier is named by its ARN's resource ID: %+v", d.Serverless[2])
 	}
 	encoded, err := json.Marshal(d)
 	if err != nil || strings.Contains(string(encoded), discard) {

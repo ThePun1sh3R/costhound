@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -113,6 +114,9 @@ func loadDMSServerless(ctx context.Context, d *DMS, c DMSAPI, skip func(string, 
 			if arn == "" {
 				skip(configs, errors.New("a listed replication configuration is missing its ARN"))
 				continue
+			}
+			if id == "" { // listed without its identifier: name it by its ARN's resource ID
+				id = arn[strings.LastIndex(arn, ":")+1:]
 			}
 			list = append(list, DMSReplication{ARN: arn, ID: id})
 		}

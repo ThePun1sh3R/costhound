@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/elasticache"
 	ectypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
+	kinesistypes "github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -86,6 +87,7 @@ type EFSAPI interface {
 type KinesisAPI interface {
 	kinesis.ListStreamsAPIClient
 	DescribeStreamSummary(context.Context, *kinesis.DescribeStreamSummaryInput, ...func(*kinesis.Options)) (*kinesis.DescribeStreamSummaryOutput, error)
+	DescribeAccountSettings(context.Context, *kinesis.DescribeAccountSettingsInput, ...func(*kinesis.Options)) (*kinesis.DescribeAccountSettingsOutput, error)
 }
 
 // FastRestore is a snapshot with Fast Snapshot Restore on in one AZ.
@@ -116,6 +118,15 @@ type Stream struct {
 	Shards     int
 	Created    *time.Time
 }
+
+// KinesisOnDemandBilling is the account's on-demand pricing mode in one region.
+type KinesisOnDemandBilling int
+
+const (
+	KinesisOnDemandStandard KinesisOnDemandBilling = iota
+	KinesisOnDemandAdvantage
+	KinesisOnDemandBillingUnknown
+)
 
 type ElastiCacheAPI interface {
 	elasticache.DescribeCacheClustersAPIClient
@@ -499,6 +510,7 @@ func loadStreams(ctx context.Context, r *Region, c KinesisAPI) error {
 		return err
 	}
 	r.exists("StreamName", names) // before DescribeStreamSummary, which may fail for some
+	hasOnDemand := false
 	for _, n := range names {
 		d, err := c.DescribeStreamSummary(ctx, &kinesis.DescribeStreamSummaryInput{StreamName: aws.String(n)})
 		if err != nil || d.StreamDescriptionSummary == nil {
@@ -510,7 +522,28 @@ func loadStreams(ctx context.Context, r *Region, c KinesisAPI) error {
 		if s.StreamModeDetails != nil {
 			st.Mode = string(s.StreamModeDetails.StreamMode)
 		}
+		hasOnDemand = hasOnDemand || st.Mode == string(kinesistypes.StreamModeOnDemand)
 		r.Streams = append(r.Streams, st)
+	}
+	if !hasOnDemand {
+		return nil
+	}
+	settings, err := c.DescribeAccountSettings(ctx, &kinesis.DescribeAccountSettingsInput{})
+	if err != nil {
+		r.KinesisOnDemandBilling = KinesisOnDemandBillingUnknown
+		r.Skipped = append(r.Skipped, Skip{Region: r.Name, What: "kinesis:DescribeAccountSettings", Error: ShortError(err)})
+		return nil
+	}
+	if commitment := settings.MinimumThroughputBillingCommitment; commitment != nil {
+		switch commitment.Status {
+		case kinesistypes.MinimumThroughputBillingCommitmentOutputStatusEnabled,
+			kinesistypes.MinimumThroughputBillingCommitmentOutputStatusEnabledUntilEarliestAllowedEnd:
+			r.KinesisOnDemandBilling = KinesisOnDemandAdvantage
+		case kinesistypes.MinimumThroughputBillingCommitmentOutputStatusDisabled:
+			r.KinesisOnDemandBilling = KinesisOnDemandStandard
+		default:
+			r.KinesisOnDemandBilling = KinesisOnDemandBillingUnknown
+		}
 	}
 	return nil
 }

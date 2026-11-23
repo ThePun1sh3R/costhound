@@ -17,6 +17,8 @@ func idleEBS(*inventory.Region, Options) map[string]inventory.EBSCandidate {
 
 func rdsLooksIdle(*inventory.Region, inventory.DBInstance, Options) bool { return false }
 
+func memberOfIdleDBCluster(*inventory.Region, inventory.DBInstance, Options) bool { return false }
+
 func ec2LooksIdle(*inventory.Region, ec2types.Instance, Options) bool { return false }
 
 func natWaived(*inventory.Region, Options) map[string]bool { return nil }

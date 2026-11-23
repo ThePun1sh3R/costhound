@@ -116,7 +116,7 @@ func verify(args []string, stdout io.Writer) int {
 	p("\nClaims to check yourself:\n")
 	p("  made by costhound %s, binary SHA-256 %s: compare with that release's SHA256SUMS\n", sig.Version, orUnknown(sig.BinarySHA256))
 	if sig.RunID != "" {
-		p("  run %s: the report's last section has the CloudTrail command that shows its calls\n", sig.RunID)
+		p("  run %s: the account's CloudTrail can confirm this run changed nothing (the text report prints the command)\n", sig.RunID)
 	}
 	p("  signed %s, by the signer's clock\n", sig.SignedAt.Format("2006-01-02 15:04 UTC"))
 	var r report.Report
@@ -130,7 +130,7 @@ func verify(args []string, stdout io.Writer) int {
 		}
 		p(".\n")
 		if r.Redaction != nil {
-			p("  It is a redacted copy; the full report's SHA-256 is %s.\n", r.Redaction.Commitment)
+			p("  It is a redacted copy; the full report's SHA-256 is %s (the file -redact-full saved).\n", r.Redaction.Commitment)
 		}
 	}
 	return 0

@@ -14,6 +14,10 @@ github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.12 h1:lqSi8qvAnKC1vfosIm
 github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.12/go.mod h1:rqPQE2vqkW9YHx5+Gp55sx1wsTM4xtGQLl+TKMjxxrs=
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.12 h1:uvX2yaL+aMjkmnrLPPlR/zwjoKFRMoNhhJfeGjfk6qc=
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.12/go.mod h1:dicT+2eNhHHqGkxHO7LoXw3QghIUGuzgdmFqaSTopgI=
+github.com/aws/aws-sdk-go-v2/service/acm v1.52.0 h1:jE6EjC+CeVPthk8lD0Z9H+D/hV8fFw3IPA88sSQsTHA=
+github.com/aws/aws-sdk-go-v2/service/acm v1.52.0/go.mod h1:X+vU8ajhUQBywA7lCt6KDD+6jmOmYpWY/jIv/niZgRM=
+github.com/aws/aws-sdk-go-v2/service/acmpca v1.56.12 h1:YGDm+5P2ZEMtES9LdF3/NzgE8CriZBc7tXKSkem50gA=
+github.com/aws/aws-sdk-go-v2/service/acmpca v1.56.12/go.mod h1:xydRZUvRB6pvYgRJCyU4CiudePuAtd7r0nIcdUbbg9U=
 github.com/aws/aws-sdk-go-v2/service/apigateway v1.52.9 h1:VYNZI0mt6b18sJX1T6jF9oWUO9Kj0m/fOOLPk9nKyWk=
 github.com/aws/aws-sdk-go-v2/service/apigateway v1.52.9/go.mod h1:HK+nhn9kUsy3xl34LXQs4HRQoCQiofFqJXv1gbsoLso=
 github.com/aws/aws-sdk-go-v2/service/applicationautoscaling v1.51.12 h1:FjhyxNQxS3lpbwPj8/B6Z0b5v+sqBrPEooKDmoGXKWA=
@@ -22,6 +26,8 @@ github.com/aws/aws-sdk-go-v2/service/autoscaling v1.82.0 h1:7wV/kVAJ60MmIyuphnKx
 github.com/aws/aws-sdk-go-v2/service/autoscaling v1.82.0/go.mod h1:etSpJIFdB1KtzvovEmoM0o4aRGbiA4LLN9MEIcUIdys=
 github.com/aws/aws-sdk-go-v2/service/backup v1.70.0 h1:BjZZI4Rnqza6OqY3WGuY4An9Vbe/LxEK4Fz+AbSh0eA=
 github.com/aws/aws-sdk-go-v2/service/backup v1.70.0/go.mod h1:oDajpYieqrUpQp1JKJCSg/yFjcgzlAdaBYxaWtzb4DA=
+github.com/aws/aws-sdk-go-v2/service/batch v1.79.1 h1:gUb8qw/NZtIwerHTKj+tnO6KXMiZ7KuA9+QwY8AuLTo=
+github.com/aws/aws-sdk-go-v2/service/batch v1.79.1/go.mod h1:TclaeSod24/P4dV9t8V4F5C7BSrvT7UanYHkpWiQWhM=
 github.com/aws/aws-sdk-go-v2/service/bedrockagent v1.70.1 h1:WCnJ+GGBcEszX2f88CEF/1QMvJKWSmGYIDisnQjp9PI=
 github.com/aws/aws-sdk-go-v2/service/bedrockagent v1.70.1/go.mod h1:Vx1kH9yjP8t5i2bqx3Uu5uofFKjAvWNVkHXeOF79YTA=
 github.com/aws/aws-sdk-go-v2/service/cloudtrail v1.65.12 h1:2yBz7HCWfWtClZWfAGQ/mgg/Og4E7eANGSyztVPEOZA=
@@ -92,6 +98,8 @@ github.com/aws/aws-sdk-go-v2/service/redshift v1.72.0 h1:vtF/8ZZCV7LGIZYzGkj98wB
 github.com/aws/aws-sdk-go-v2/service/redshift v1.72.0/go.mod h1:b6ZAf/KxWo6e+5k3URL4bnjxi73Nil7WOIGQtW+olEM=
 github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi v1.42.0 h1:C5MObSLa6vuu51AjmcOTwNDr1V0RWZTW57ALHSDllpM=
 github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi v1.42.0/go.mod h1:j8qpULzMbJIUNh9S5aAM5SVldIxb/pYMpis+cGBhOpA=
+github.com/aws/aws-sdk-go-v2/service/rolesanywhere v1.35.0 h1:Z32EZ7PlqUMC/MplzfDfJOpH7Nd1hQ8ScYSd2HVNr/A=
+github.com/aws/aws-sdk-go-v2/service/rolesanywhere v1.35.0/go.mod h1:Sb1BZ/pA0+IIS/BjyksifFfO+FKpb8jJbRvhPoXlSMI=
 github.com/aws/aws-sdk-go-v2/service/route53 v1.71.0 h1:z3rXSCR6cqg34XeZlzpYo1txK9EP/lAPh7NxhQSTF7g=
 github.com/aws/aws-sdk-go-v2/service/route53 v1.71.0/go.mod h1:ESN88d5omEDCHVFJ+jz01i3w8oYvGVj3lSCYhM6BoL8=
 github.com/aws/aws-sdk-go-v2/service/s3 v1.116.0 h1:0/glEMW6lLpeGOq7tDKn3314ookbLSvzRs71Oknt6gA=
@@ -108,6 +116,8 @@ github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.5 h1:uIOBLMhef4N16WguadoHKuBy
 github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.5/go.mod h1:NwWmkFLtsTVyXQpbzPOlYLwEoANkdCFjJRtrNcbg/vY=
 github.com/aws/aws-sdk-go-v2/service/sts v1.52.0 h1:IaBLmJWiIEtKkjXMgMbYGZk7WKXbYA8148wCMCXq9hU=
 github.com/aws/aws-sdk-go-v2/service/sts v1.52.0/go.mod h1:MG6N8U9+lY4LqchrlHPqCOSr7hyxw70XU0Et2YR3eNA=
+github.com/aws/aws-sdk-go-v2/service/workspaces v1.83.3 h1:BGsqeNjK1Z8tF2Il5+1dUTllRa0Ju+cH5Gb2rlrQR+w=
+github.com/aws/aws-sdk-go-v2/service/workspaces v1.83.3/go.mod h1:Ra7vmqQtK4uvSfKxevnTqsRuNHA+OY0DrQhuwLiPJQo=
 github.com/aws/smithy-go v1.28.9 h1:zkZ058OpNX0iGTK24b+ZUEQSMc11CBA6oO7xtKZfzkY=
 github.com/aws/smithy-go v1.28.9/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=

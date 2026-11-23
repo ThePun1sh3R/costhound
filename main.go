@@ -8,12 +8,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/acm"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca"
 	"github.com/aws/aws-sdk-go-v2/service/apigateway"
 	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
 	"github.com/aws/aws-sdk-go-v2/service/globalaccelerator"
@@ -23,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	"github.com/aws/aws-sdk-go-v2/service/backup"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	dms "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
@@ -41,9 +45,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi"
 	rgtschemas "github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi/schemas"
+	"github.com/aws/aws-sdk-go-v2/service/rolesanywhere"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/aws-sdk-go-v2/service/workspaces"
 	"github.com/aws/smithy-go/transport/http/protocol/awsjson"
 
 	"github.com/ThePun1sh3R/costhound/internal/checks"
@@ -84,7 +90,7 @@ func run(args []string) int {
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "costhound %s: find AWS resources that cost money for nothing (read-only)\n\nUsage: costhound [flags]\n"+
 			"       costhound explain <finding id>    everything costhound knows about one finding\n"+
-			"       costhound plan -out <new folder>  Pro: fix scripts to review and run, with a backup and a rollback each\n"+
+			"       costhound plan -out <new folder>  Pro: fix scripts to review and run, with a backup where AWS allows one, and a rollback\n"+
 			"       costhound serve                   Team: local dashboard over saved runs\n"+
 			"       costhound keygen                  make the key that signs your reports (-sign)\n"+
 			"       costhound verify <report.json>    check a signed report, and what its signature proves\n\nFlags:\n", version)
@@ -98,33 +104,34 @@ func run(args []string) int {
 	failOver := fs.Float64("fail-over", 0, "Team: exit with code 3 when estimated waste is at least this many dollars a month (for CI)")
 	failOnNew := fs.Bool("fail-on-new", false, "Team: exit with code 3 when there is priced waste that is new since the last run (for CI)")
 	redact := fs.Bool("redact", false, "Pro: print a copy to share outside the account: IDs, names, ARNs, addresses and owners become keyed tokens; fix commands are left out")
+	redactFull := fs.String("redact-full", "", "Pro: with -redact, also save the full JSON report to this new file, whose SHA-256 the redacted copy holds (keep it private)")
 	redactKey := fs.String("redact-key", "", "Pro: the key -redact uses (default: costhound/redact.key in your config folder, made on first use)")
 	var tfStates stringList
 	creators := fs.Bool("creators", false, "Pro: for findings with no owner tag, ask CloudTrail's 90-day event history who created the resource (needs iam-policy-creators.json)")
 	fs.Var(&tfStates, "tf-state", "Team: a Terraform/OpenTofu state file (raw, or terraform show -json) or a folder of them; findings get the resource that manages them (repeat for more)")
 	icsPath := fs.String("ics", "", "Pro: also write the cost-cliff calendar to this file (iCalendar), to import or publish")
-	signPath := fs.String("sign", "", "Pro: also write the JSON report to this file, signed with your key (costhound keygen) in <file>.sig")
+	signPath := fs.String("sign", "", "Pro: also write the JSON report to this file, and its signature (made with your key, see costhound keygen) to <file>.sig")
 	signKey := fs.String("sign-key", "", "Pro: the signing key for -sign (default: costhound/report-signing.key in your config folder)")
 	redactMap := fs.String("redact-map", "", "Pro: with -redact, also write token -> original to this file (keep it private)")
 	failOnUnowned := fs.Float64("fail-on-unowned", 0, "Team: exit with code 3 when waste on resources with no owner tag is at least this many dollars a month (for CI)")
 	failScope := fs.String("fail-scope", "all", "Team, with -tf-state: the CI gates count only the waste in those state files (terraform) or in none of them (outside)")
-	orgMode := fs.Bool("org", false, "Team: scan every active account of the AWS Organization (run from the management or a delegated admin account)")
+	orgMode := fs.Bool("org", false, "Team: scan every active account of the AWS Organization (run from the management account or a delegated administrator account)")
 	orgRole := fs.String("org-role", "CosthoundReadOnly", "Team: role to assume in each member account (deploy it with deploy/costhound-readonly-role.yaml)")
 	orgAccounts := fs.String("org-accounts", "", "Team: only these comma-separated account IDs of the Organization")
 	ignoreFile := fs.String("ignore-file", "", "acknowledged findings (default: ./"+ignore.DefaultFile+" if it exists; \"none\" turns it off)")
-	noHistory := fs.Bool("no-history", false, "paid plans: don't save this run or compare with the last one")
-	historyDir := fs.String("history-dir", "", "paid plans: where runs are saved (default: <config dir>/costhound/runs)")
+	noHistory := fs.Bool("no-history", false, "Pro: don't save this run or compare it with the last one")
+	historyDir := fs.String("history-dir", "", "Pro: where runs are saved (default: <config dir>/costhound/runs)")
 	noFix := fs.Bool("no-fix", false, "hide the fix commands")
-	minUSD := fs.Float64("min-usd", 0.50, "hide priced findings below this many dollars a month; alarms, secrets and hosted zones count by their region's total (the report says how many it hid, by check)")
+	minUSD := fs.Float64("min-usd", 0.50, "hide priced findings below this many dollars a month; alarms, secrets, hosted zones and detailed monitoring count by their region's total (the report says how many it hid, by check)")
 	snapDays := fs.Int("snapshot-age", 90, "report snapshots, AMIs and RDS snapshots older than this many days")
 	stoppedDays := fs.Int("stopped-days", 7, "report instances stopped for at least this many days")
 	secretDays := fs.Int("secret-days", 90, "report secrets nobody has read for this many days")
 	minLogGiB := fs.Float64("min-log-gib", 1, "list never-expiring log groups this big one by one (smaller ones are grouped)")
-	usageDays := fs.Int("usage-days", 14, "paid plans: days of CloudWatch usage to judge a resource by (and its minimum age)")
-	minIngest := fs.Float64("min-ingest-gib", 10, "paid plans: list log groups ingesting at least this many GiB a month")
+	usageDays := fs.Int("usage-days", 14, "Pro: days of CloudWatch usage to judge a resource by (and its minimum age)")
+	minIngest := fs.Float64("min-ingest-gib", 10, "Pro: list log groups ingesting at least this many GiB a month")
 	concurrency := fs.Int("concurrency", 6, "regions scanned at the same time")
 	timeout := fs.Duration("timeout", 10*time.Minute, "give up after this long")
-	licenseFlag := fs.String("license", "", "Pro license key, or a file holding it (default: $"+license.EnvVar+", then <config dir>/costhound/license)")
+	licenseFlag := fs.String("license", "", "Pro/Team license key, or a file holding it (default: $"+license.EnvVar+", then <config dir>/costhound/license)")
 	showVersion := fs.Bool("version", false, "print the version and plan, then exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -132,9 +139,17 @@ func run(args []string) int {
 		}
 		return 2
 	}
-	lic := license.Resolve(*licenseFlag, license.PublicKey, time.Now())
+	if *redactFull != "" && !*redact {
+		fmt.Fprintln(os.Stderr, "costhound: -redact-full needs -redact")
+		return 2
+	}
+	now := time.Now()
+	lic := license.Resolve(*licenseFlag, license.PublicKey, now)
 	if lic.Problem != "" {
 		fmt.Fprintf(os.Stderr, "costhound: license from %s not accepted: %s. Running the free checks.\n", lic.From, lic.Problem)
+	}
+	if w := license.ExpiryWarning(lic.Claims, now); w != "" {
+		fmt.Fprintln(os.Stderr, w)
 	}
 	if lic.Plan != license.PlanFree && !checks.BuildHasPro {
 		fmt.Fprintln(os.Stderr, "costhound: this build is from source and has only the free checks; the paid features are in the official release.")
@@ -149,6 +164,14 @@ func run(args []string) int {
 	}
 	if *concurrency < 1 {
 		*concurrency = 1
+	}
+	// Refuse a bad -redact-full path before any AWS call, so -ics/-sign/-html
+	// are not written only for the full report to fail after the scan.
+	if *redactFull != "" && license.Rank(lic.Plan) >= license.Rank(license.PlanPro) {
+		if err := checkRedactFullPath(*redactFull); err != nil {
+			fmt.Fprintf(os.Stderr, "costhound: %v\n", err)
+			return 2
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -193,7 +216,7 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "costhound: %s. Running the free checks.\n", lic.Problem)
 	}
 
-	now := time.Now()
+	now = time.Now()
 	checkOpts := checks.DefaultOptions(now)
 	checkOpts.SnapshotAgeDays = *snapDays
 	checkOpts.StoppedDays = *stoppedDays
@@ -249,6 +272,7 @@ func run(args []string) int {
 	// The run record last: -creators' CloudTrail calls are calls too.
 	rep.Run = &report.RunInfo{ID: run.ID, UserAgent: run.UserAgent(), Caller: aws.ToString(who.Arn),
 		Started: started, Finished: time.Now(), Calls: run.Calls()}
+	fullReport := rep
 	if *redact {
 		// Only what is printed or sent is redacted: the saved history keeps the full report.
 		if rep, err = redactReport(rep, *redactKey, *redactMap); err != nil {
@@ -275,6 +299,12 @@ func run(args []string) int {
 			return 1
 		}
 	}
+	if *redactFull != "" {
+		if err := writeFullReport(fullReport, *redactFull); err != nil {
+			fmt.Fprintf(os.Stderr, "costhound: can't save the full report (-redact-full): %v\n", err)
+			return 1
+		}
+	}
 	if *asJSON {
 		if err := rep.JSON(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "costhound: %v\n", err)
@@ -284,6 +314,36 @@ func run(args []string) int {
 		rep.Text(os.Stdout, !*noFix)
 	}
 	return teamActions(ctx, rep, *slackHook, *failOver, *failOnNew, *failOnUnowned, *failScope)
+}
+
+// checkRedactFullPath refuses a -redact-full path that can't be created as a
+// new file (already there, missing folder, or folder not writable). It does
+// not create the path: writeFullReport's O_EXCL write is the final guard.
+func checkRedactFullPath(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s already exists: -redact-full never overwrites", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	dir := filepath.Dir(path)
+	st, err := os.Stat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("folder %s does not exist", dir)
+		}
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("%s is not a folder", dir)
+	}
+	tmp, err := os.CreateTemp(dir, ".costhound-redact-full-*")
+	if err != nil {
+		return fmt.Errorf("folder %s is not writable", dir)
+	}
+	name := tmp.Name()
+	tmp.Close()
+	os.Remove(name)
+	return nil
 }
 
 // checkFailScope: -fail-scope is all, terraform or outside, and the last two
@@ -362,19 +422,20 @@ func loadBuckets(ctx context.Context, cfg aws.Config, regions []string) bucketsB
 	return out
 }
 
-func scan(ctx context.Context, cfg aws.Config, account string, regions []string, o checks.Options, workers int, buckets bucketsByRegion, owners owner.Keys) ([]checks.Finding, []checks.Cliff, []inventory.Skip, map[string]string, []string, []string) {
+func scan(ctx context.Context, cfg aws.Config, account string, regions []string, o checks.Options, workers int, buckets bucketsByRegion, owners owner.Keys) ([]checks.Finding, []checks.Cliff, []inventory.Skip, map[string]string, []string, []string, []string) {
 	var (
-		mu       sync.Mutex
-		findings []checks.Finding
-		cliffs   []checks.Cliff
-		skipped  []inventory.Skip
-		stopped  []string // "|region|id": for the diff (report.Stopped)
-		unjudged []string // "|region|check|key": for the diff (report.Unjudged)
-		standard int      // standard-resolution single-metric alarms, for the account's 10 free ones
-		custom   int      // custom metrics in all (paid plans), for ec2-detailed-monitoring's tier
-		customOK = true   // every region's custom metrics were read
-		done     int
-		wg       sync.WaitGroup
+		mu          sync.Mutex
+		findings    []checks.Finding
+		cliffs      []checks.Cliff
+		skipped     []inventory.Skip
+		stopped     []string // "|region|id": for the diff (report.Stopped)
+		eksClusters []string // "|region|name": for the diff (report.EKSClusters)
+		unjudged    []string // "|region|check|key": for the diff (report.Unjudged)
+		standard    int      // standard-resolution single-metric alarms, for the account's 10 free ones
+		custom      int      // custom metrics in all (paid plans), for ec2-detailed-monitoring's tier
+		customOK    = true   // every region's custom metrics were read
+		done        int
+		wg          sync.WaitGroup
 	)
 	pc := cfg.Copy()
 	pc.Region = "us-east-1" // the Price List API endpoint
@@ -403,21 +464,29 @@ func scan(ctx context.Context, cfg aws.Config, account string, regions []string,
 					EFS:         efs.NewFromConfig(c),
 					Kinesis:     kinesis.NewFromConfig(c),
 
-					ImageRefs:  ec2.NewFromConfig(c),
-					ASG:        autoscaling.NewFromConfig(c),
-					Hosts:      ec2.NewFromConfig(c),
-					Offerings:  ec2.NewFromConfig(c),
-					KMS:        kms.NewFromConfig(c),
-					RDS:        rds.NewFromConfig(c),
-					EKS:        eks.NewFromConfig(c),
-					Routes:     ec2.NewFromConfig(c),
-					Classic:    classicelb.NewFromConfig(c),
-					APIGateway: apigateway.NewFromConfig(c),
-					CloudTrail: cloudtrail.NewFromConfig(c),
-					ELBTags:    elb.NewFromConfig(c),
-					Alarms:     cloudwatch.NewFromConfig(c),
-					Capacity:   ec2.NewFromConfig(c),
-					DMS:        dms.NewFromConfig(c),
+					ImageRefs:     ec2.NewFromConfig(c),
+					ASG:           autoscaling.NewFromConfig(c),
+					Hosts:         ec2.NewFromConfig(c),
+					Offerings:     ec2.NewFromConfig(c),
+					KMS:           kms.NewFromConfig(c),
+					RDS:           rds.NewFromConfig(c),
+					EKS:           eks.NewFromConfig(c),
+					Routes:        ec2.NewFromConfig(c),
+					Classic:       classicelb.NewFromConfig(c),
+					APIGateway:    apigateway.NewFromConfig(c),
+					CloudTrail:    cloudtrail.NewFromConfig(c),
+					ELBTags:       elb.NewFromConfig(c),
+					ELBRules:      elb.NewFromConfig(c),
+					Alarms:        cloudwatch.NewFromConfig(c),
+					Capacity:      ec2.NewFromConfig(c),
+					Fleets:        ec2.NewFromConfig(c),
+					SpotFleets:    ec2.NewFromConfig(c),
+					Batch:         batch.NewFromConfig(c),
+					DMS:           dms.NewFromConfig(c),
+					PCA:           acmpca.NewFromConfig(c),
+					RolesAnywhere: rolesanywhere.NewFromConfig(c),
+					ACM:           acm.NewFromConfig(c),
+					WorkSpaces:    workspaces.NewFromConfig(c),
 				})
 				inv.Buckets = buckets.by[region]
 				loadPaid(ctx, c, inv, o, account, priceList) // paid plans: usage, the Price List, commitments
@@ -455,6 +524,9 @@ func scan(ctx context.Context, cfg aws.Config, account string, regions []string,
 						stopped = append(stopped, "|"+region+"|"+aws.ToString(in.InstanceId))
 					}
 				}
+				for _, name := range inv.EKSNames { // every listed cluster, even one whose details couldn't be read: it exists
+					eksClusters = append(eksClusters, "|"+region+"|"+name)
+				}
 				for _, u := range inv.Unjudged {
 					unjudged = append(unjudged, "|"+region+"|"+u)
 				}
@@ -475,7 +547,8 @@ func scan(ctx context.Context, cfg aws.Config, account string, regions []string,
 	findings, indexParked = globalIndexes(findings, regions) // Pro: a global table's index, judged across its replicas
 	unjudged = append(unjudged, indexParked...)
 	sort.Strings(stopped)
-	return findings, cliffs, append(skipped, buckets.skips...), sources, stopped, unjudged
+	sort.Strings(eksClusters)
+	return findings, cliffs, append(skipped, buckets.skips...), sources, stopped, unjudged, eksClusters
 }
 
 // globalFindings runs the checks on account-wide services (Route 53) once
@@ -560,6 +633,7 @@ type settings struct {
 	org         string // the account's AWS Organization, when the license names one
 	owners      owner.Keys
 	orgPlans    *orgPlans // -org: every scanned account's Savings Plans
+	orgHub      *orgHub   // -org: the Organization management account's Cost Optimization Hub
 }
 
 // scanAccount runs the whole pipeline for one account: regions, checks, Cost
@@ -570,7 +644,7 @@ func scanAccount(ctx context.Context, cfg aws.Config, account string, st setting
 		return nil, fmt.Errorf("can't list regions (%s); pass -regions to choose them yourself", inventory.ShortError(err))
 	}
 	fmt.Fprintf(os.Stderr, "costhound: scanning account %s in %d region(s)...\n", account, len(regions))
-	findings, cliffs, skipped, priceSources, stopped, unjudged := scan(ctx, cfg, account, regions, st.o, st.concurrency, loadBuckets(ctx, cfg, regions), st.owners)
+	findings, cliffs, skipped, priceSources, stopped, unjudged, eksClusters := scan(ctx, cfg, account, regions, st.o, st.concurrency, loadBuckets(ctx, cfg, regions), st.owners)
 	gf, gs, gu, g := globalFindings(ctx, cfg, st.o, st.owners)
 	// Orphan alarms a Route 53 health check reads are left out, now that the health checks are read.
 	var hcParked []string
@@ -579,12 +653,16 @@ func scanAccount(ctx context.Context, cfg aws.Config, account string, st setting
 	af, as := acceleratorFindings(ctx, cfg, regions, st.o, st.owners)
 	findings, skipped = append(findings, af...), append(skipped, as...)
 	paid := license.Rank(st.o.Plan) >= license.Rank(license.PlanPro)
-	findings, cliffs, skipped = paidAccount(ctx, cfg, st, findings, cliffs, skipped) // paid plans: the hub, commitments, Savings Plans
+	var parked []string
+	findings, cliffs, skipped, parked = paidAccount(ctx, cfg, st, account, findings, cliffs, skipped) // paid plans: the hub, commitments, Savings Plans
+	unjudged = append(unjudged, parked...)
 	rep := report.New(version, account, st.o.Now, regions, findings, skipped, st.minUSD)
 	rep.Plan = st.o.Plan
 	rep.Org = st.org
+	rep.OrgHub = st.orgHub.ok()
 	rep.PriceNote = report.PriceNoteFor(priceSources)
 	rep.Stopped = stopped
+	rep.EKSClusters = eksClusters
 	rep.Unjudged = unjudged
 	rep.SetUpcoming(cliffs)
 	rep.Settings = fmt.Sprintf("min-usd=%g snapshot-age=%d stopped-days=%d secret-days=%d min-log-gib=%g usage-days=%d min-ingest-gib=%g",

@@ -357,13 +357,18 @@ func TestAPIGatewayReadIsScopedToStages(t *testing.T) {
 // users; costhound keeps only the ID, the name and an OpenSearch Serverless
 // collection's ARN), DMS instance Kerberos configuration, task and
 // replication settings and failure details, and Transfer server custom
-// identity provider URLs and login banners. API Gateway's stage
+// identity provider URLs and login banners, and load balancer listeners and
+// rules (an OIDC login action's client secret, which AWS doesn't document
+// returning, and a fixed response's body), Spot Fleet LaunchSpecifications
+// (UserData). API Gateway's stage
 // reads (stage variables) are the other one,
 // left out by resource. costhound drops those fields on arrival; the strict
 // policy keeps the answers from reaching it at all.
 var secretCapableReads = []string{"lambda:ListFunctions", "elasticmapreduce:DescribeCluster", "elasticmapreduce:ListSteps", "ecs:DescribeTaskDefinition",
 	"lambda:ListEventSourceMappings", "ecs:DescribeServices", "bedrock:GetKnowledgeBase",
-	"dms:DescribeReplicationInstances", "dms:DescribeReplicationTasks", "dms:DescribeReplicationConfigs", "dms:DescribeReplications", "transfer:DescribeServer"}
+	"dms:DescribeReplicationInstances", "dms:DescribeReplicationTasks", "dms:DescribeReplicationConfigs", "dms:DescribeReplications", "transfer:DescribeServer",
+	"elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeRules",
+	"ec2:DescribeSpotFleetRequests"}
 
 // iam-policy-strict.json is iam-policy.json without the secret-capable reads:
 // the same statements in the same order, nothing added, and API Gateway left

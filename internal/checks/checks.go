@@ -143,6 +143,7 @@ var All = []Check{
 	{"unused-ami", "AMIs nobody launches", UnusedAMIs, license.PlanFree},
 	{"idle-dedicated-host", "Dedicated Hosts running no instances", IdleDedicatedHosts, license.PlanFree},
 	{"disabled-kms-key", "KMS keys switched off but still billed", DisabledKMSKeys, license.PlanFree},
+	{"unused-private-ca", "Private CAs billed while they can't issue", UnusedPrivateCAs, license.PlanFree},
 	{"rds-orphan-snapshot", "RDS snapshots of deleted databases", RDSOrphanSnapshots, license.PlanFree},
 	{"empty-eks-cluster", "EKS clusters with nothing to run on", EmptyEKSClusters, license.PlanFree},
 	{"nat-no-routes", "NAT gateways no route uses", NATNoRoutes, license.PlanFree},
@@ -153,6 +154,7 @@ var All = []Check{
 	{"empty-hosted-zone", "Route 53 hosted zones with no records", EmptyHostedZones, license.PlanFree},
 	{"orphan-alarm", "CloudWatch alarms on resources that are gone", OrphanAlarms, license.PlanFree},
 	{"idle-dms-instance", "Idle DMS replication instances and Serverless replications", IdleDMS, license.PlanFree},
+	{"unused-workspace", "WorkSpaces nobody signed in to for 30 days", UnusedWorkSpaces, license.PlanFree},
 	{"unused-capacity-reservation", "EC2 Capacity Reservations nobody uses", UnusedCapacityReservations, license.PlanFree},
 	{"ec2-detailed-monitoring", "EC2 detailed monitoring nobody needs", DetailedMonitoring, license.PlanFree},
 	{"rds-graviton", "RDS databases that could run on Graviton", RDSGraviton, license.PlanFree},
@@ -177,8 +179,9 @@ var All = []Check{
 	{"idle-kinesis", "Kinesis streams with no records", nil, license.PlanPro},
 	{"opensearch-extended-support", "OpenSearch and Elasticsearch domains past standard support", nil, license.PlanPro},
 	{"idle-opensearch", "OpenSearch domains nobody searches or writes to", nil, license.PlanPro},
-	{"idle-transfer-server", "Transfer Family servers left stopped", nil, license.PlanPro},
+	{"idle-transfer-server", "Stopped or idle Transfer Family servers", nil, license.PlanPro},
 	{"idle-resolver-endpoint", "Route 53 Resolver endpoints with no queries", nil, license.PlanPro},
+	{"idle-fsx", "FSx file systems nobody reads or writes", nil, license.PlanPro},
 	{"idle-opensearch-serverless", "OpenSearch Serverless collection groups and collections nobody uses", nil, license.PlanPro},
 	{"idle-sagemaker-endpoint", "SageMaker endpoints with no invocations", nil, license.PlanPro},
 	{"idle-redshift", "Redshift clusters nobody connects to", nil, license.PlanPro},
@@ -188,6 +191,7 @@ var All = []Check{
 	{"idle-client-vpn", "Client VPN endpoints nobody connects to", nil, license.PlanPro},
 	{"vpn-tunnels-down", "Site-to-Site VPN connections with every tunnel down", nil, license.PlanPro},
 	{"idle-rds", "RDS databases nobody connects to", nil, license.PlanPro},
+	{"idle-db-cluster", "Aurora, Multi-AZ, DocumentDB and Neptune DB clusters nobody connects to", nil, license.PlanPro},
 	{"quiet-classic-lb", "Classic Load Balancers with no traffic", nil, license.PlanPro},
 	{"idle-network-firewall", "Network Firewalls with no traffic", nil, license.PlanPro},
 	{"idle-ec2", "EC2 instances idle every day", nil, license.PlanPro},
@@ -293,7 +297,8 @@ var TookOver = map[string]string{"nat-no-routes": "idle-nat"}
 var Families = map[string]string{"gp2-to-gp3": "ebs-volume", "piops-to-gp3": "ebs-volume", "idle-attached-ebs": "ebs-volume", "unattached-ebs": "ebs-volume",
 	"idle-ec2": "ec2-instance", "ec2-graviton": "ec2-instance", "old-instance-type": "ec2-instance",
 	"idle-dynamodb": "dynamodb-table", "dynamodb-table-class": "dynamodb-table",
-	"idle-accelerator": "accelerator", "quiet-accelerator": "accelerator"}
+	"idle-accelerator": "accelerator", "quiet-accelerator": "accelerator",
+	"idle-db-cluster": "db-cluster", "aurora-serverless-pause": "db-cluster"}
 
 // ParkedWhenStopped: checks that leave a resource alone while its instance is
 // stopped, though it costs the same (idle-attached-ebs judges running
@@ -301,6 +306,12 @@ var Families = map[string]string{"gp2-to-gp3": "ebs-volume", "piops-to-gp3": "eb
 // value is the fact naming the instance. Its finding going away while that
 // instance is stopped is no fix.
 var ParkedWhenStopped = map[string]string{"idle-attached-ebs": "instance", "ec2-detailed-monitoring": "instance"}
+
+// ParkedWhileClusterExists: checks that leave a resource alone while the EKS
+// cluster its fact names still exists this run (Karpenter node pools have no
+// AWS list API). The value is the fact naming the cluster. Its finding going
+// away while that cluster is listed is no fix.
+var ParkedWhileClusterExists = map[string]string{"ec2-detailed-monitoring": "eks_cluster"}
 
 func label(id string, tags []ec2types.Tag) string {
 	if name, ok := tag(tags, "Name"); ok && name != "" {
@@ -615,7 +626,7 @@ func OldSnapshots(r *inventory.Region, o Options) []Finding {
 			Region:   r.Name,
 			Resource: fmt.Sprintf("%d snapshot(s) of %s", len(g.old), orDash(vol)),
 			Key:      "snapshots-of-" + orDash(vol),
-			Detail: fmt.Sprintf("%s; oldest %s, newest %s; not used by any of your AMIs or backup plans",
+			Detail: fmt.Sprintf("%s; oldest %s, newest %s; not used by any of your AMIs, and not made by AWS Backup or Data Lifecycle Manager",
 				source, ageText(o.Now, g.old[0].StartTime), ageText(o.Now, g.old[len(g.old)-1].StartTime)),
 		}
 		gib := g.maxBytes / (1 << 30)
@@ -729,7 +740,14 @@ func IdleLoadBalancers(r *inventory.Region, o Options) []Finding {
 		}
 		why := fmt.Sprintf("%d target group(s), 0 registered targets", lb.TargetGroups)
 		if lb.TargetGroups == 0 {
-			why = "no target groups (if it only serves redirects or fixed responses, it may still be in use)"
+			why = "no target groups"
+		}
+		targets := why
+		switch {
+		case lb.Responds > 0:
+			why += fmt.Sprintf("; %d listener(s) redirect or return a fixed response", lb.Responds)
+		case lb.ListenersUnknown:
+			why += "; its listeners couldn't be read"
 		}
 		keys := make([]string, 0, len(lb.TargetGroupARNs))
 		for _, tg := range lb.TargetGroupARNs {
@@ -748,6 +766,20 @@ func IdleLoadBalancers(r *inventory.Region, o Options) []Finding {
 			// reader (the lb-delete fix checks Auto Scaling live, not this fact).
 			Facts: facts("lb_arn", lb.ARN, "lb_name", lb.Name, "lb_type", lb.Type, "asgs", strings.Join(asgs, " ")),
 		}
+		f.Evidence = append(f.Evidence, "ELB DescribeTargetGroups and DescribeTargetHealth: "+targets)
+		if lb.Type == "application" { // the listeners of an ALB with no targets are read
+			switch {
+			case lb.Responds > 0:
+				f.Evidence = append(f.Evidence, fmt.Sprintf("ELB DescribeListeners and DescribeRules: %d listener(s) with a redirect or fixed-response action", lb.Responds))
+			case lb.ListenersUnknown:
+				f.Evidence = append(f.Evidence, "ELB DescribeListeners and DescribeRules: couldn't be read")
+			default:
+				f.Evidence = append(f.Evidence, "ELB DescribeListeners and DescribeRules: no listener redirects or returns a fixed response")
+			}
+		}
+		if lb.Scheme == "internet-facing" && (lb.Type == "application" || lb.Type == "network") {
+			f.Detail += fmt.Sprintf("; it also pays %s a month for each public IPv4 address (one per zone it's in), which this price leaves out", money(pb(r).PublicIPv4Monthly()))
+		}
 		if k := lb.Kubernetes; k != "" && k != "?" { // named in the Why: -redact hides what facts hold
 			f.Facts["kubernetes_cluster"] = k
 		}
@@ -755,11 +787,32 @@ func IdleLoadBalancers(r *inventory.Region, o Options) []Finding {
 			f.Confidence, f.Why = "low", refill
 			del = "# " + del
 		}
+		var call string // a person's call, ahead of the commented delete
+		switch answer := "a redirect (HTTP to HTTPS, or from an old domain) or a fixed response answers users without a target"; {
+		case lb.Responds > 0:
+			if f.Confidence != "low" {
+				del = "# " + del
+			}
+			call = "# a person's call: check that nobody relies on its redirects or fixed responses first"
+			f.Confidence, f.Why = "low", "it may still be in use: "+answer+joinWhy(f.Why)
+		case lb.ListenersUnknown && f.Confidence == "":
+			del = "# " + del // below high, the delete is a comment (as idle-classic-lb's)
+			call = "# a person's call: check its listeners for redirects or fixed responses first"
+			f.Confidence, f.Why = "medium", "its listeners couldn't be read: "+answer
+		}
 		if gone != "" {
 			f.Evidence = append(f.Evidence, "tagged for Kubernetes cluster "+gone+"; EKS ListClusters: no cluster of that name in "+r.Name)
-			f.Why = "left behind by Kubernetes cluster " + gone + ", which isn't in this region's EKS any more: nothing will register targets again, so delete the load balancer itself (no Service is left to delete)"
+			left := "left behind by Kubernetes cluster " + gone + ", which isn't in this region's EKS any more: nothing will register targets again"
+			if f.Why == "" {
+				f.Why = left + ", so delete the load balancer itself (no Service is left to delete)"
+			} else {
+				f.Why += "; " + left // its listener reason, which set the confidence, stays first
+			}
 		}
 		f.Fix = []string{del}
+		if call != "" {
+			f.Fix = []string{call, del}
+		}
 		out = append(out, f)
 	}
 	return out
@@ -920,4 +973,12 @@ func oldDetail(r *inventory.Region, in ec2types.Instance, repl string) string {
 		}
 	}
 	return b.String()
+}
+
+// joinWhy appends an earlier reason to a new one.
+func joinWhy(why string) string {
+	if why == "" {
+		return ""
+	}
+	return "; " + why
 }

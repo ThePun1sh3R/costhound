@@ -63,7 +63,7 @@ func TestUnusedCapacityReservations(t *testing.T) {
 	if h := got["cr-held"]; h.Priced || !strings.Contains(h.Detail, "not priced: it can't go below its commitment of 4") {
 		t.Errorf("all of it committed: %+v", h)
 	}
-	if e := got["cr-ending"]; !near(e.MonthlyUSD, 2*m5.Hour*240) || !strings.Contains(e.Detail, "for the 240 hours it has left") || e.Facts["ends"] == "never" {
+	if e := got["cr-ending"]; !near(e.MonthlyUSD, 2*m5.Hour*240) || !strings.Contains(e.Detail, "counting only the 240 hours it has left") || e.Facts["ends"] == "never" {
 		t.Errorf("ends in 10 days: %+v", e)
 	}
 	// Everything that exists without a finding is parked; a cancelled one isn't.

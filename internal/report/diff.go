@@ -48,6 +48,14 @@ func movedKey(f checks.Finding) string {
 		id, _, _ := strings.Cut(keyOf(f), " ") // "vol-… (Name)": the ID, whatever the Name tag says now
 		return "family|" + fam + "|" + f.Account + "|" + f.Region + "|" + id
 	}
+	// cost-hub Storage recs share ResourceID with the instance/cluster rec;
+	// Key is Resource+"/storage" so they get distinct finding IDs. Match by
+	// Resource across that Key change so an upgrade books no fake fix. An
+	// acknowledgement written by finding ID for a storage rec stops matching
+	// once.
+	if f.Check == "cost-hub" && strings.HasSuffix(f.Facts["resource_type"], "Storage") {
+		return "hub-storage|" + f.Account + "|" + f.Region + "|" + f.Resource
+	}
 	old, ok := checks.TookOver[f.Check]
 	if !ok {
 		for _, o := range checks.TookOver {

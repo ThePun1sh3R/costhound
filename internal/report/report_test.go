@@ -73,6 +73,19 @@ func TestText(t *testing.T) {
 	if strings.Contains(out, "tiny") {
 		t.Error("finding under -min-usd was printed")
 	}
+	// The Team checks aren't Pro's: they get their own line.
+	pro, _, _ := strings.Cut(out[strings.Index(out, "costhound Pro also checks: "):], "\n")
+	if strings.Contains(pro, "Savings Plans and Reserved Instances to buy") || !strings.Contains(out, "costhound Team adds: Savings Plans and Reserved Instances to buy") {
+		t.Errorf("free upsell: Team checks listed as Pro:\n%s", out)
+	}
+	// The run's own price note, not the built-in one, when the run set it.
+	r := sample()
+	r.PriceNote = "Prices are each region's on-demand prices from the AWS Price List."
+	b.Reset()
+	r.Text(&b, true)
+	if !strings.Contains(b.String(), r.PriceNote) || strings.Contains(b.String(), PriceNote) {
+		t.Errorf("text report ignores the run's price note:\n%s", b.String())
+	}
 
 	b.Reset()
 	sample().Text(&b, false)
@@ -175,7 +188,7 @@ func TestSingleRegionDeniedStaysASkip(t *testing.T) {
 }
 
 func TestPriceNoteFor(t *testing.T) {
-	if n := PriceNoteFor(nil); !strings.Contains(n, "us-east-1") || !strings.Contains(n, "Pro uses each region's real prices") {
+	if n := PriceNoteFor(nil); !strings.Contains(n, "us-east-1") || !strings.Contains(n, "Pro uses each region's own list prices") {
 		t.Errorf("free: %s", n)
 	}
 	all := map[string]string{"eu-west-1": "AWS Price List (fetched 2026-11-19)", "eu-north-1": "AWS Price List (fetched 2026-11-19)"}
@@ -204,7 +217,7 @@ func TestOwnersInText(t *testing.T) {
 		"· owner Payments (tag Team)",
 		"· owner payments (tag owner)",
 		"confidence  · no owner tag",
-		"By owner (from owner tags):",
+		"By owner:",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("text report lacks %q:\n%s", want, out)
@@ -216,5 +229,28 @@ func TestOwnersInText(t *testing.T) {
 	}
 	if strings.Count(out, "· owner ")+strings.Count(out, "· no owner tag") != 3 {
 		t.Errorf("only the three priced findings about one resource name an owner:\n%s", out)
+	}
+}
+
+// A long check title widens the By check column instead of pushing its row
+// out of line.
+func TestTextByCheckAligns(t *testing.T) {
+	at := time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC)
+	fs := []checks.Finding{
+		{Check: "unattached-ebs", Region: "eu-west-1", Resource: "vol-1", MonthlyUSD: 10, Priced: true},
+		{Check: "cloudtrail-duplicate", Region: "eu-west-1", Resource: "trail-2", Detail: "unpriced"},
+	}
+	var b bytes.Buffer
+	New("v", "123456789012", at, []string{"eu-west-1"}, fs, nil, 0).Text(&b, false)
+	col := map[string]int{}
+	for _, line := range strings.Split(b.String(), "\n") {
+		for _, id := range []string{"unattached-ebs", "cloudtrail-duplicate"} {
+			if title := checks.Title(id); strings.HasPrefix(line, "  "+title+" ") {
+				col[id] = len(line) - len(strings.TrimLeft(line[len(title)+2:], " ")) // where the count starts
+			}
+		}
+	}
+	if len(col) != 2 || col["unattached-ebs"] != col["cloudtrail-duplicate"] {
+		t.Errorf("the count column doesn't line up: %v\n%s", col, b.String())
 	}
 }

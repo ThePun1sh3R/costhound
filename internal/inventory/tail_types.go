@@ -30,34 +30,45 @@ import (
 // the checks judge only what is reporting.
 type Tail struct {
 	migrationTail
-	EKSFit      map[string]*EKSFit // EKS cluster -> Container Insights requests and use, hour by hour
-	Domains     []Domain
-	Endpoints   []SageMakerEndpoint
-	Warehouses  []Warehouse
-	Attachments []Attachment
-	Kafka       []KafkaCluster
-	ClientVPNs  []ClientVPN
-	VPNs        []string // Site-to-Site VPN connections whose TunnelState series is active
-	Firewalls   []Firewall
+	fsxTail
+	workspacesTail                    // unused-workspace Pro: CloudWatch age and AmazonWorkSpaces User prices
+	EKSFit         map[string]*EKSFit // EKS cluster -> Container Insights requests and use, hour by hour
+	Domains        []Domain
+	Endpoints      []SageMakerEndpoint
+	Warehouses     []Warehouse
+	Attachments    []Attachment
+	Kafka          []KafkaCluster
+	ClientVPNs     []ClientVPN
+	VPNs           []string // Site-to-Site VPN connections whose TunnelState series is active
+	Firewalls      []Firewall
 
-	DomainRequests            map[string]float64 // domain name -> requests + searches + indexing over the window
-	Invocations               map[string]float64 // "endpoint/variant" -> invocations over the window
-	Connections               map[string]float64 // Redshift cluster -> sum of its DatabaseConnections samples
-	AttachmentBytes           map[string]float64 // attachment ID -> bytes in + out
-	CacheCommands             map[string]float64 // ElastiCache cluster or replication group -> commands of every family
-	CacheItems                map[string]float64 // ... -> CurrItems samples: keys held (a warm standby holds data)
-	KafkaTraffic              map[string]float64 // MSK cluster -> messages in + bytes in/out, all brokers
-	ClientVPNUse              map[string]float64 // Client VPN endpoint -> connection samples + bytes in and out
-	VPNTunnelState            map[string]float64 // Site-to-Site VPN connection -> TunnelState sum (0 = every tunnel down in every sample)
-	DBConnections             map[string]float64 // RDS DB instance -> connection samples + connection attempts + IAM auth requests
-	ClassicTraffic            map[string]float64 // Classic Load Balancer -> requests + estimated bytes processed
-	RDSHour                   map[string]float64 // idle-looking RDS DB instance -> its On-Demand $/hour (Price List)
-	FirewallHour              float64            // Network Firewall $ per endpoint-hour (0 = built-in)
-	FirewallGB                float64            // Network Firewall $ per GB processed (0 = built-in)
-	EC2CPU                    map[string]float64 // EC2 instance -> highest daily average CPU %
-	EC2CPUPeak                map[string]float64 // EC2 instance -> highest single CPU sample % (5 minutes, or 1 with detailed monitoring)
-	EBSOps                    map[string]float64 // attached data volume -> read + write operations over the window
-	Window                    int                // the usage window in days the series were read over
+	DomainRequests  map[string]float64 // domain name -> requests + searches + indexing over the window
+	Invocations     map[string]float64 // "endpoint/variant" -> invocations over the window
+	Connections     map[string]float64 // Redshift cluster -> sum of its DatabaseConnections samples
+	AttachmentBytes map[string]float64 // attachment ID -> bytes in + out
+	CacheCommands   map[string]float64 // ElastiCache cluster or replication group -> commands of every family
+	CacheItems      map[string]float64 // ... -> CurrItems samples: keys held (a warm standby holds data)
+	KafkaTraffic    map[string]float64 // MSK cluster -> messages in + bytes in/out, all brokers
+	ClientVPNUse    map[string]float64 // Client VPN endpoint -> connection samples + bytes in and out
+	VPNTunnelState  map[string]float64 // Site-to-Site VPN connection -> TunnelState sum (0 = every tunnel down in every sample)
+	DBConnections   map[string]float64 // RDS DB instance -> connection samples + connection attempts + IAM auth requests
+	ClassicTraffic  map[string]float64 // Classic Load Balancer -> requests + estimated bytes processed
+	RDSHour         map[string]float64 // idle-looking RDS DB instance -> its On-Demand $/hour (Price List)
+	// idle-db-cluster: BlueGreen is nil until DescribeBlueGreenDeployments answers (or
+	// there was no Aurora / Multi-AZ DB cluster to ask about); keys are cluster ARNs that are a
+	// blue/green source or target. DBClusterRead is set when a candidate cluster's
+	// member metrics were read; DBClusterMember holds each member's proof.
+	BlueGreen                 map[string]bool
+	DBClusterRead             map[string]bool               // cluster ID -> metrics read
+	DBClusterMember           map[string]DBClusterMemberUse // "clusterID/memberID"
+	DBClusterHour             map[string]float64            // provisioned member ID -> On-Demand $/hour
+	DBClusterWholeHour        map[string]float64            // Multi-AZ DB cluster ID -> whole-deployment On-Demand $/hour
+	FirewallHour              float64                       // Network Firewall $ per endpoint-hour (0 = built-in)
+	FirewallGB                float64                       // Network Firewall $ per GB processed (0 = built-in)
+	EC2CPU                    map[string]float64            // EC2 instance -> highest daily average CPU %
+	EC2CPUPeak                map[string]float64            // EC2 instance -> highest single CPU sample % (5 minutes, or 1 with detailed monitoring)
+	EBSOps                    map[string]float64            // attached data volume -> read + write operations over the window
+	Window                    int                           // the usage window in days the series were read over
 	EMRClusters               []EMRCluster
 	EMRIdle                   map[string]float64 // EMR cluster -> IsIdle summed over the window (1 per idle 5-minute check)
 	EMRSamples                map[string]float64 // EMR cluster -> IsIdle checks over the window
@@ -126,6 +137,14 @@ type Tail struct {
 	KafkaBrokerHour map[string]float64 // "kafka.m5.large" -> MSK broker $/h
 	KafkaGBMonth    float64            // MSK broker storage $/GB-month
 	ClientVPNHour   float64            // Client VPN $ per subnet-association hour (0 = built-in)
+	PCAMonthly      map[string]float64 // CA-month price by usage mode (GENERAL_PURPOSE, SHORT_LIVED_CERTIFICATE); nil = not read
+}
+
+// DBClusterMemberUse is one cluster member's idle-db-cluster CloudWatch proof.
+type DBClusterMemberUse struct {
+	Reporting       bool // CPUUtilization (Average) had a point every day
+	Used            bool // any connection, attempt, IAM auth or Neptune request above 0
+	AttemptsAllDays bool // aurora-mysql ConnectionAttempts had a point every day
 }
 
 // Domain is an OpenSearch Service domain and its node groups.
@@ -162,7 +181,8 @@ type Warehouse struct {
 	ID, NodeType, Status string
 	Nodes                int
 	Created              *time.Time
-	Pausable             bool // RA3 or DC2, in a VPC, no HSM, automated snapshots on: what pause-cluster needs
+	Pausable             bool   // RA3, RG or DC2, in a VPC, no HSM, automated snapshots on: what pause-cluster needs
+	PauseBlock           string // why it can't pause: "ds2", "node-type", "vpc", "hsm" or "snapshots" ("" when it can)
 }
 
 // IndexWindowDays is how far back idle-dynamodb-index reads, whatever

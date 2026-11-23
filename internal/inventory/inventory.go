@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	elb "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elbtypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/smithy-go"
@@ -40,6 +41,20 @@ type LoadBalancer struct {
 	TargetIPs       []TargetIP // targets registered by IP address
 	Kubernetes      string     // the Kubernetes cluster its tags name ("?" if they don't say which), "" if none
 	TagsUnknown     bool       // its tags couldn't be read
+
+	// Application Load Balancers with no targets: how many listeners redirect
+	// or return a fixed response (they answer users without a target).
+	Responds         int
+	ListenersUnknown bool // its listeners or rules couldn't be read
+}
+
+// ELBListenersAPI reads load balancers' listeners and rules. Only their
+// actions' types are kept: an OIDC login action can include a client secret
+// (AWS doesn't document whether it's returned) and extra parameters, and a
+// fixed response a body.
+type ELBListenersAPI interface {
+	elb.DescribeListenersAPIClient
+	elb.DescribeRulesAPIClient
 }
 
 // ELBTagsAPI reads load balancer tags (API version 2).
@@ -85,6 +100,8 @@ type Region struct {
 	Prices         *pricing.Book // paid plans: this region\'s prices from the AWS Price List; nil = built-in
 	Skipped        []Skip
 
+	KinesisOnDemandBilling KinesisOnDemandBilling
+
 	// Long-tail free checks (longtail.go).
 	ImageRefs          map[string]bool // AMI IDs that something references (EC2 DescribeImageReferences); nil = unknown
 	LaunchConfigASGs   int             // Auto Scaling groups on a launch configuration (-1 = unknown)
@@ -109,6 +126,9 @@ type Region struct {
 	ASGUnknown         bool                    // the Auto Scaling groups couldn't be read
 	ASGNames           []string                // the Auto Scaling groups that exist (none when ASGUnknown)
 	ASGLaunch          map[string]LaunchSource // Auto Scaling group -> what launches its instances
+	EC2Fleets          []EC2Fleet              // nil = not read (ec2-detailed-monitoring)
+	SpotFleets         []SpotFleet             // nil = not read; ID and state only (UserData dropped)
+	BatchCEs           []BatchCE               // nil = not read
 	// Unjudged: "check|key" of resources that exist but a check couldn't
 	// judge this run (a group scaled to zero, a service it can't price): the
 	// report parks their findings, so going away isn't a fix. Checks of one
@@ -129,7 +149,9 @@ type Region struct {
 
 	CapacityReservations []CapacityReservation // EC2 On-Demand Capacity Reservations, shared ones included
 	DMS                  *DMS
-	CapacityListed       bool // DescribeCapacityReservations answered in full
+	PCA                  *PCA        // ACM Private CAs (nil = not read)
+	WorkSpaces           *WorkSpaces // nil = list failed or not read
+	CapacityListed       bool        // DescribeCapacityReservations answered in full
 }
 
 // EC2API is the subset of the EC2 client costhound uses.
@@ -173,21 +195,29 @@ type Clients struct {
 	Kinesis     KinesisAPI
 
 	// Long-tail free checks (longtail.go).
-	ImageRefs  ImageRefsAPI
-	ASG        ASGAPI
-	Hosts      ec2.DescribeHostsAPIClient
-	Offerings  ec2.DescribeInstanceTypeOfferingsAPIClient
-	KMS        KMSAPI
-	RDS        RDSSnapshotAPI
-	EKS        EKSFreeAPI
-	Routes     RouteTablesAPI
-	Classic    ClassicLBAPI
-	ELBTags    ELBTagsAPI
-	APIGateway APIGatewayAPI
-	CloudTrail CloudTrailAPI
-	Alarms     AlarmsAPI // CloudWatch alarms (orphan-alarm)
-	Capacity   ec2.DescribeCapacityReservationsAPIClient
-	DMS        DMSAPI
+	ImageRefs     ImageRefsAPI
+	ASG           ASGAPI
+	Hosts         ec2.DescribeHostsAPIClient
+	Offerings     ec2.DescribeInstanceTypeOfferingsAPIClient
+	KMS           KMSAPI
+	RDS           RDSSnapshotAPI
+	EKS           EKSFreeAPI
+	Routes        RouteTablesAPI
+	Classic       ClassicLBAPI
+	ELBTags       ELBTagsAPI
+	ELBRules      ELBListenersAPI
+	APIGateway    APIGatewayAPI
+	CloudTrail    CloudTrailAPI
+	Alarms        AlarmsAPI // CloudWatch alarms (orphan-alarm)
+	Capacity      ec2.DescribeCapacityReservationsAPIClient
+	Fleets        ec2.DescribeFleetsAPIClient
+	SpotFleets    ec2.DescribeSpotFleetRequestsAPIClient
+	Batch         BatchAPI
+	DMS           DMSAPI
+	PCA           PCAAPI
+	RolesAnywhere RolesAnywhereAPI
+	ACM           ACMAPI
+	WorkSpaces    WorkSpacesAPI
 }
 
 // Load reads one region. It never returns an error: failures land in Skipped.
@@ -295,6 +325,9 @@ func Load(ctx context.Context, region, account string, c Clients) *Region {
 			if c.ELBTags != nil {
 				loadLBTags(ctx, r.LoadBalancers, c.ELBTags, skip)
 			}
+			if c.ELBRules != nil {
+				loadLBListeners(ctx, r.LoadBalancers, c.ELBRules, skip)
+			}
 		}
 	}
 	loadExtras(ctx, r, c, skip)
@@ -305,8 +338,23 @@ func Load(ctx context.Context, region, account string, c Clients) *Region {
 	if c.Capacity != nil {
 		loadCapacityReservations(ctx, r, c.Capacity, account, skip)
 	}
+	if c.Fleets != nil {
+		loadEC2Fleets(ctx, r, c.Fleets, skip)
+	}
+	if c.SpotFleets != nil {
+		loadSpotFleets(ctx, r, c.SpotFleets, skip)
+	}
+	if c.Batch != nil {
+		loadBatchCEs(ctx, r, c.Batch, skip)
+	}
 	if c.DMS != nil {
 		loadDMS(ctx, r, c.DMS, skip)
+	}
+	if c.PCA != nil {
+		loadPCA(ctx, r, c.PCA, c.RolesAnywhere, c.ACM, skip)
+	}
+	if c.WorkSpaces != nil {
+		loadWorkSpaces(ctx, r, c.WorkSpaces, skip)
 	}
 	if account != "" {
 		r.Snapshots = ownedBy(r.Snapshots, account, func(s ec2types.Snapshot) string { return aws.ToString(s.OwnerId) })
@@ -398,6 +446,65 @@ func loadBalancers(ctx context.Context, c ELBAPI) ([]LoadBalancer, string, error
 		return nil, "elasticloadbalancing:DescribeTargetHealth", tgErr
 	}
 	return lbs, "", nil
+}
+
+// loadLBListeners reads the listeners and rules of the Application Load
+// Balancers with no targets: a redirect or a fixed response still answers
+// users without one. Only whether an action redirects or answers is kept.
+// After a failed read the rest stay unknown: one skip line, not one each.
+func loadLBListeners(ctx context.Context, lbs []LoadBalancer, c ELBListenersAPI, skip func(string, error)) {
+	answers := func(as []elbtypes.Action) bool {
+		for _, a := range as {
+			if a.Type == elbtypes.ActionTypeEnumRedirect || a.Type == elbtypes.ActionTypeEnumFixedResponse {
+				return true
+			}
+		}
+		return false
+	}
+	failed := false
+	for i := range lbs {
+		lb := &lbs[i]
+		if lb.Type != "application" || lb.Targets > 0 {
+			continue
+		}
+		if failed {
+			lb.ListenersUnknown = true
+			continue
+		}
+		var listeners []string
+		n := 0
+		lp := elb.NewDescribeListenersPaginator(c, &elb.DescribeListenersInput{LoadBalancerArn: aws.String(lb.ARN)})
+		if err := drain(ctx, lp.HasMorePages, lp.NextPage, func(o *elb.DescribeListenersOutput) {
+			for _, l := range o.Listeners {
+				if answers(l.DefaultActions) {
+					n++
+				} else {
+					listeners = append(listeners, aws.ToString(l.ListenerArn))
+				}
+			}
+		}); err != nil {
+			lb.ListenersUnknown, failed = true, true
+			skip("elasticloadbalancing:DescribeListeners", err)
+			continue
+		}
+		for _, arn := range listeners {
+			found := false
+			rp := elb.NewDescribeRulesPaginator(c, &elb.DescribeRulesInput{ListenerArn: aws.String(arn)})
+			if err := drain(ctx, rp.HasMorePages, rp.NextPage, func(o *elb.DescribeRulesOutput) {
+				for _, r := range o.Rules {
+					found = found || answers(r.Actions)
+				}
+			}); err != nil {
+				lb.ListenersUnknown, failed = true, true
+				skip("elasticloadbalancing:DescribeRules", err)
+				break
+			}
+			if found {
+				n++
+			}
+		}
+		lb.Responds = n
+	}
 }
 
 // loadLBTags reads the tags of the load balancers with no targets (the only

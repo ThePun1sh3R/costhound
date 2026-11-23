@@ -38,6 +38,8 @@ func TestLeftBehindByAGoneCluster(t *testing.T) {
 		LoadBalancers: []inventory.LoadBalancer{
 			{ARN: "arn:aws:elasticloadbalancing:eu-west-1:1:loadbalancer/app/lb-gone/1", Name: "lb-gone", Type: "application", Kubernetes: "old"},
 			{ARN: "arn:aws:elasticloadbalancing:eu-west-1:1:loadbalancer/app/lb-live/2", Name: "lb-live", Type: "application", Kubernetes: "live"},
+			{ARN: "arn:aws:elasticloadbalancing:eu-west-1:1:loadbalancer/app/lb-gone-redirect/3", Name: "lb-gone-redirect", Type: "application", Kubernetes: "old", Responds: 1},
+			{ARN: "arn:aws:elasticloadbalancing:eu-west-1:1:loadbalancer/app/lb-gone-unread/4", Name: "lb-gone-unread", Type: "application", Kubernetes: "old", ListenersUnknown: true},
 		},
 	}
 	vols := byResource(UnattachedVolumes(r, opts()))
@@ -50,8 +52,18 @@ func TestLeftBehindByAGoneCluster(t *testing.T) {
 		}
 	}
 	lbs := byResource(IdleLoadBalancers(r, opts()))
-	if f := lbs["lb-gone"]; f.Confidence == "low" || !strings.Contains(f.Why, "left behind by Kubernetes cluster old") || strings.HasPrefix(f.Fix[0], "#") {
+	if f := lbs["lb-gone"]; f.Confidence == "low" || !strings.Contains(f.Why, "left behind by Kubernetes cluster old") || !strings.Contains(f.Why, "delete the load balancer itself") || strings.HasPrefix(f.Fix[0], "#") {
 		t.Errorf("a gone cluster's load balancer is a plain idle one, with the reason: %+v", f)
+	}
+	// Its listeners' reason set the confidence, so it stays first, and nothing
+	// says to delete a load balancer that may still answer users.
+	if f := lbs["lb-gone-redirect"]; f.Confidence != "low" || !strings.HasPrefix(f.Fix[0], "#") || !strings.HasPrefix(f.Why, "it may still be in use") ||
+		!strings.Contains(f.Why, "left behind by Kubernetes cluster old") || strings.Contains(f.Why, "delete the load balancer itself") {
+		t.Errorf("a gone cluster's load balancer that redirects: %+v", f)
+	}
+	if f := lbs["lb-gone-unread"]; f.Confidence != "medium" || !strings.HasPrefix(f.Why, "its listeners couldn't be read") ||
+		!strings.Contains(f.Why, "left behind by Kubernetes cluster old") || strings.Contains(f.Why, "delete the load balancer itself") {
+		t.Errorf("a gone cluster's load balancer whose listeners couldn't be read: %+v", f)
 	}
 	if f := lbs["lb-live"]; f.Confidence != "low" {
 		t.Errorf("a live cluster's load balancer may get targets back: %+v", f)

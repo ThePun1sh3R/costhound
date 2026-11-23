@@ -64,23 +64,27 @@ func launcherLabel(kind string) string {
 // metrics once (and a lower tier past 250,000). The instances of one
 // launcher (launchers) are one finding: an Auto Scaling group's launch
 // template or configuration, a Karpenter node pool's EC2NodeClass, a fleet's
-// launch template turns monitoring back on at the next launch. An Auto
-// Scaling group with no running instance is parked (the other launchers
-// can't be listed); a stopped instance is parked by ParkedWhenStopped.
+// launch template turns monitoring back on at the next launch. A listed
+// launcher with no running instance is parked (its setting may still turn
+// monitoring on at the next scale-out); a stopped instance is parked by
+// ParkedWhenStopped. EMR needs no list: a live cluster always runs its
+// primary node, so no running instance means terminated or starting.
+// Karpenter node pools are Kubernetes objects (no AWS list): parked on the
+// diff side while their EKS cluster still exists (ParkedWhileClusterExists).
 func DetailedMonitoring(r *inventory.Region, o Options) []Finding {
 	scaling, minute := monitoringAlarms(r)
 	alarmsRead := !slices.ContainsFunc(r.Skipped, func(s inventory.Skip) bool { return s.What == "cloudwatch:DescribeAlarms" })
 	groups := map[string][]ec2types.Instance{} // "kind/name" -> its monitored instances
 	var order []string
 	var out []Finding
-	running := map[string]bool{} // Auto Scaling groups with a running instance
+	running := map[string]bool{} // "kind/name" with a running instance
 	for _, in := range r.Instances {
 		if in.State == nil || in.State.Name != ec2types.InstanceStateNameRunning {
 			continue
 		}
 		kind, name := launcherOf(in.Tags)
-		if kind == "asg" {
-			running[name] = true
+		if kind != "" {
+			running[kind+"/"+name] = true
 		}
 		if in.Monitoring == nil || in.Monitoring.State != ec2types.MonitoringStateEnabled {
 			continue
@@ -99,12 +103,75 @@ func DetailedMonitoring(r *inventory.Region, o Options) []Finding {
 		kind, name, _ := strings.Cut(g, "/")
 		out = append(out, monitoringFinding(r, groups[g], kind, name, scaling, minute, alarmsRead))
 	}
+	park := func(key string) {
+		r.Unjudged = append(r.Unjudged, "ec2-detailed-monitoring|"+key)
+	}
 	for _, g := range r.ASGNames {
-		if !running[g] { // no running instance to judge: its template may still turn it on
-			r.Unjudged = append(r.Unjudged, "ec2-detailed-monitoring|asg/"+g)
+		if !running["asg/"+g] { // no running instance to judge: its template may still turn it on
+			park("asg/" + g)
+		}
+	}
+	// EMR: no new read. A live cluster always runs its primary node: no
+	// running instance means the cluster is terminated or still starting.
+	if r.EC2Fleets != nil {
+		for _, f := range r.EC2Fleets {
+			if f.Type == "instant" {
+				continue // an instant fleet never launches again
+			}
+			switch f.State {
+			case "submitted", "active", "modifying":
+				if !running["ec2-fleet/"+f.ID] {
+					park("ec2-fleet/" + f.ID)
+				}
+			}
+		}
+	}
+	if r.SpotFleets != nil {
+		for _, f := range r.SpotFleets {
+			switch f.State {
+			case "submitted", "active", "modifying":
+				if !running["spot-fleet/"+f.ID] {
+					park("spot-fleet/" + f.ID)
+				}
+			}
+		}
+	}
+	if r.BatchCEs != nil {
+		for _, ce := range r.BatchCEs {
+			if ce.Type != "MANAGED" || (ce.ResourceType != "EC2" && ce.ResourceType != "SPOT") {
+				continue
+			}
+			if ce.State != "ENABLED" && ce.State != "DISABLED" {
+				continue
+			}
+			if ce.Status == "DELETING" || ce.Status == "DELETED" {
+				continue
+			}
+			if !running["batch/"+ce.Name] && !running["batch/"+ce.ARN] {
+				// The instance tag may hold the name or the ARN: park both;
+				// KeepParked keeps only the one a finding had.
+				park("batch/" + ce.Name)
+				if ce.ARN != "" && ce.ARN != ce.Name {
+					park("batch/" + ce.ARN)
+				}
+			}
 		}
 	}
 	return out
+}
+
+// eksClusterOf is the EKS cluster name an instance's tags name: the name in
+// a kubernetes.io/cluster/<name> tag key, else the eks:eks-cluster-name value.
+func eksClusterOf(tags []ec2types.Tag) string {
+	for _, t := range tags {
+		if name, ok := strings.CutPrefix(aws.ToString(t.Key), "kubernetes.io/cluster/"); ok && name != "" {
+			return name
+		}
+	}
+	if v, ok := tag(tags, "eks:eks-cluster-name"); ok && v != "" {
+		return v
+	}
+	return ""
 }
 
 // monitoringAlarms: the groups with scaling-policy alarms (one-minute
@@ -202,7 +269,7 @@ func monitoringFinding(r *inventory.Region, ins []ec2types.Instance, kind, group
 	} else {
 		f.Resource, f.Key, f.Members = group+" ("+launcherLabel(kind)+")", kind+"/"+group, ids
 		f.Detail = fmt.Sprintf("detailed monitoring on for %d instance(s) of one %s: about %d one-minute metrics, billed as custom metrics", n, launcherLabel(kind), metrics)
-		f.Facts = facts("instances", itoa(n), "sample", ids[0], "metrics", itoa(metrics), "categories", strings.Join(cats, " "), "minute_alarm", watcher, "alarms_unread", unread)
+		f.Facts = facts("launcher", kind, "instances", itoa(n), "sample", ids[0], "metrics", itoa(metrics), "categories", strings.Join(cats, " "), "minute_alarm", watcher, "alarms_unread", unread)
 		switch kind {
 		case "asg":
 			l := r.ASGLaunch[group]
@@ -223,6 +290,11 @@ func monitoringFinding(r *inventory.Region, ins []ec2types.Instance, kind, group
 			}
 		default:
 			f.Facts["launched_by"], f.Facts["group"] = kind, group
+			if kind == "karpenter" {
+				if cluster := eksClusterOf(first.Tags); cluster != "" {
+					f.Facts["eks_cluster"] = cluster
+				}
+			}
 			f.Fix = []string{map[string]string{
 				"karpenter":  "# Karpenter node pool " + group + " launches it: set spec.detailedMonitoring: false in its EC2NodeClass, and the nodes it launches next come without it",
 				"ec2-fleet":  "# EC2 Fleet " + group + " launches it: turn detailed monitoring off in the launch template it uses, for the instances it launches next",

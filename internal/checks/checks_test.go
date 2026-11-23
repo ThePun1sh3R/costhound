@@ -140,7 +140,7 @@ func fixture() *inventory.Region {
 		LoadBalancers: []inventory.LoadBalancer{
 			{ARN: "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-idle/0f1e2d3c4b5a6978", Name: "lb-idle", Type: "application", TargetGroups: 1, Targets: 0},
 			{ARN: "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/net/lb-busy/0f1e2d3c4b5a6978", Name: "lb-busy", Type: "network", TargetGroups: 1, Targets: 3},
-			{ARN: "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-redirect/0f1e2d3c4b5a6978", Name: "lb-redirect", Type: "application"},
+			{ARN: "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-redirect/0f1e2d3c4b5a6978", Name: "lb-redirect", Type: "application", Responds: 1},
 			{ARN: "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-quiet/0f1e2d3c4b5a6978", Name: "lb-quiet", Type: "application", TargetGroups: 1, Targets: 2, Created: ago(60)},
 			{ARN: "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-new-quiet/0f1e2d3c4b5a6978", Name: "lb-new-quiet", Type: "application", TargetGroups: 1, Targets: 2, Created: ago(3)},
 		},
@@ -293,7 +293,23 @@ func fixture() *inventory.Region {
 	replication := inventory.DMSReplication{ARN: "arn:aws:dms:eu-west-1:123456789012:rep:retired", ID: "old-replication", Status: "stopped"}
 	replication.LastStop = *ago(10)
 	r.DMS = &inventory.DMS{Serverless: []inventory.DMSReplication{replication}}
+	pcaARN := "arn:aws:acm-pca:eu-west-1:123456789012:certificate-authority/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	r.PCA = &inventory.PCA{
+		CAs: []inventory.PrivateCA{{
+			ARN: pcaARN, ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", Status: "PENDING_CERTIFICATE",
+			Type: "ROOT", UsageMode: "GENERAL_PURPOSE", CommonName: "fixture-pca", Created: *ago(40), PolicyRead: true,
+		}},
+		AnchorsRead: true, Anchored: map[string]bool{}, ACMNamed: map[string]bool{},
+	}
+	r.WorkSpaces = &inventory.WorkSpaces{Items: []inventory.WorkSpace{{
+		ID: "ws-unused", DirectoryID: "d-unused", UserName: "jane.doe", State: "AVAILABLE",
+		RunningMode: "ALWAYS_ON", ComputeType: "STANDARD", OS: "WINDOWS_10", RootGiB: 80, UserGiB: 50,
+		StatusRead: true, ConnectionState: "DISCONNECTED",
+		ConnectionChecked: now, LastSignIn: now.AddDate(0, 0, -40),
+	}}}
 	addMigrationUsageFixture(r)
+	addFSxUsageFixture(r)
+	addDBClusterUsageFixture(r)
 	return r
 }
 
@@ -461,8 +477,8 @@ func TestIdleLoadBalancers(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 	wantUSD(t, got["lb-idle"], 16.425)
-	if !strings.Contains(got["lb-redirect"].Detail, "redirects") {
-		t.Errorf("detail = %q", got["lb-redirect"].Detail)
+	if f := got["lb-redirect"]; !strings.Contains(f.Detail, "redirect or return a fixed response") || f.Confidence != "low" {
+		t.Errorf("lb-redirect: %+v", f)
 	}
 	if _, ok := got["lb-busy"]; ok {
 		t.Error("load balancer with targets reported")
@@ -579,7 +595,7 @@ func TestPIOPSToGP3(t *testing.T) {
 	// gp3 1000*0.08 + 45000*0.005 + 625*0.04 = 330; io2 125 + 32000*0.065 + 16000*0.0455 = 2933.
 	f = got["vol-io1-big"]
 	wantUSD(t, f, 2915)
-	if f.Confidence != "low" || !strings.Contains(f.Detail, "or io2, the same latency class: $2933/mo ($312 less), online") ||
+	if f.Confidence != "low" || !strings.Contains(f.Detail, "or io2, as fast or faster: $2933 a month ($312 less), changed online") ||
 		!strings.HasPrefix(f.Fix[0], "# check the workload first: it has 48000 IOPS") || strings.Contains(f.Fix[0], "MiB/s") ||
 		f.Fix[1] != "# aws ec2 modify-volume --region eu-west-1 --volume-id vol-io1-big --volume-type gp3 --iops 48000 --throughput 750" {
 		t.Errorf("io1 over 32,000 IOPS: gp3 (a comment: latency), or io2 for less: %+v", f)

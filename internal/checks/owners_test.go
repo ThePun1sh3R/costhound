@@ -75,6 +75,7 @@ func TestTagRefsFromFacts(t *testing.T) {
 		{Finding{Check: "idle-ip", Resource: "52.1.2.3 (web)", Facts: map[string]string{"allocation": "eipalloc-0abc"}}, "ec2:elastic-ip/eipalloc-0abc"},
 		{Finding{Check: "quiet-load-balancer", Resource: "web", Facts: map[string]string{"lb_arn": "arn:aws:elasticloadbalancing:eu-west-1:1:loadbalancer/app/web/50dc"}}, "elasticloadbalancing:loadbalancer/app/web/50dc"},
 		{Finding{Check: "disabled-kms-key", Resource: "alias/old", Key: "k1", Facts: map[string]string{"key_arn": "arn:aws:kms:eu-west-1:1:key/k1"}}, "kms:key/k1"},
+		{Finding{Check: "unused-private-ca", Resource: "ca-1 (Example)", Facts: map[string]string{"ca": "arn:aws:acm-pca:eu-west-1:1:certificate-authority/ca-1"}}, "acm-pca:certificate-authority/ca-1"},
 		{Finding{Check: "idle-msk", Resource: "events", Facts: map[string]string{"cluster_arn": "arn:aws:kafka:eu-west-1:1:cluster/events/0d2f"}}, "kafka:cluster/events/0d2f"},
 		{Finding{Check: "idle-elasticache", Resource: "sessions", Facts: map[string]string{"cache": "sessions", "replication_group": "true"}}, "elasticache:replicationgroup:sessions"},
 		{Finding{Check: "idle-elasticache", Resource: "memo", Facts: map[string]string{"cache": "memo", "replication_group": "false"}}, "elasticache:cluster:memo"},

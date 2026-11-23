@@ -6,10 +6,13 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.48.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.19
 	github.com/aws/aws-sdk-go-v2/credentials v1.21.1
+	github.com/aws/aws-sdk-go-v2/service/acm v1.52.0
+	github.com/aws/aws-sdk-go-v2/service/acmpca v1.56.12 // pinned: newer versions speak Smithy RPC v2 CBOR, which moto can't serve; AWS accepts JSON 1.1
 	github.com/aws/aws-sdk-go-v2/service/apigateway v1.52.9
 	github.com/aws/aws-sdk-go-v2/service/applicationautoscaling v1.51.12
 	github.com/aws/aws-sdk-go-v2/service/autoscaling v1.82.0
 	github.com/aws/aws-sdk-go-v2/service/backup v1.70.0
+	github.com/aws/aws-sdk-go-v2/service/batch v1.79.1
 	github.com/aws/aws-sdk-go-v2/service/bedrockagent v1.70.1
 	github.com/aws/aws-sdk-go-v2/service/cloudtrail v1.65.12
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.76.0
@@ -40,11 +43,13 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/rds v1.133.0
 	github.com/aws/aws-sdk-go-v2/service/redshift v1.72.0
 	github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi v1.42.0
+	github.com/aws/aws-sdk-go-v2/service/rolesanywhere v1.35.0
 	github.com/aws/aws-sdk-go-v2/service/route53 v1.71.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.0
 	github.com/aws/aws-sdk-go-v2/service/sagemaker v1.291.0
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.51.0
 	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0
+	github.com/aws/aws-sdk-go-v2/service/workspaces v1.83.3 // pinned: newer versions speak Smithy RPC v2 CBOR, which moto can't serve; AWS accepts JSON 1.1
 	github.com/aws/smithy-go v1.28.9
 	gopkg.in/yaml.v3 v3.0.1
 )
