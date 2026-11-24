@@ -212,10 +212,19 @@ type Tagger interface {
 // with a TagRef). A finding whose tags couldn't be read keeps both empty, so
 // it never counts as unowned, and the failed read is listed in r.Skipped.
 func Attach(ctx context.Context, r *inventory.Region, fs []checks.Finding, api Tagger, ks Keys) {
+	AttachWithNativeTags(ctx, r, fs, api, ks, nil)
+}
+
+// AttachWithNativeTags uses native tag reads for the supplied references.
+// A nil map for a reference marks a failed read and leaves the owner unknown.
+func AttachWithNativeTags(ctx context.Context, r *inventory.Region, fs []checks.Finding, api Tagger, ks Keys, native map[string]map[string]string) {
 	tags := ks.known(r)
 	types := map[string]bool{}
 	for _, f := range fs {
 		ref := normRef(f.TagRef)
+		if _, ok := native[ref]; ok {
+			continue
+		}
 		if _, ok := tags[ref]; !ok && ref != "" {
 			if t := Type(ref); t != "" {
 				types[t] = true
@@ -247,6 +256,12 @@ func Attach(ctx context.Context, r *inventory.Region, fs []checks.Finding, api T
 	for i := range fs {
 		ref := normRef(fs[i].TagRef)
 		if ref == "" {
+			continue
+		}
+		if t, ok := native[ref]; ok {
+			if t != nil {
+				fs[i].Owner, fs[i].OwnerFrom = ks.Pick(t)
+			}
 			continue
 		}
 		t, ok := tags[ref]

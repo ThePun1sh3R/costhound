@@ -63,6 +63,12 @@ func TestWritesAndSecretReadsAreNeverSent(t *testing.T) {
 	if _, err := c.DescribeVpnConnections(context.Background(), &ec2.DescribeVpnConnectionsInput{}); err == nil {
 		t.Error("DescribeVpnConnections returns tunnel keys: it must be refused")
 	}
+	if why := Refused("DescribeVirtualInterfaces"); why == "" || !strings.Contains(why, "BGP") {
+		t.Errorf("DescribeVirtualInterfaces must be refused for BGP keys: %q", why)
+	}
+	if why := Refused("DescribeRouterConfiguration"); why == "" {
+		t.Error("DescribeRouterConfiguration must be refused")
+	}
 	if len(h.seen) != 0 {
 		t.Errorf("refused calls must never reach AWS: %d sent", len(h.seen))
 	}

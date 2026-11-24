@@ -39,6 +39,7 @@ type Report struct {
 	Findings        []checks.Finding `json:"findings"`
 	Skipped         []inventory.Skip `json:"skipped"`
 	BlockedRegions  []Blocked        `json:"blocked_regions"`
+	NotOffered      []NotOffered     `json:"not_offered"`        // services with no endpoint in a reached region
 	Diff            *Diff            `json:"diff,omitempty"`     // paid plans: change since the last saved run
 	Accounts        []AccountResult  `json:"accounts,omitempty"` // Organization scans: one line per account
 	Settings        string           `json:"settings,omitempty"` // the thresholds of this run, to tell real fixes from changed settings
@@ -59,6 +60,17 @@ type Report struct {
 	// so a diff of two saved runs (the dashboard) agrees with the live one.
 	// Left out of redacted copies.
 	Parked []string `json:"parked,omitempty"`
+	// OpenSearchDataNodes records the observed data-node configuration under
+	// the same key as Parked. A listed but transitional domain has no size.
+	OpenSearchDataNodes map[string]inventory.NodeGroup `json:"opensearch_data_nodes,omitempty"`
+	// PendingOpenSearchResizes keep a previously reported resize verifiable
+	// when load or deployment temporarily takes it out of the findings.
+	PendingOpenSearchResizes []checks.Finding `json:"pending_opensearch_resizes,omitempty"`
+	// ParkedRedshiftResizes carries the prior sizing recommendation through
+	// scans where its cluster is still at a different size or is mid-resize.
+	ParkedRedshiftResizes []checks.Finding `json:"parked_redshift_resizes,omitempty"`
+	// RedshiftClusters is this scan's list by ARN, used to verify a resize.
+	RedshiftClusters map[string]inventory.Warehouse `json:"-"`
 	// Unjudged: this run's "|<region>|<check>|<key>" of every resource a
 	// check couldn't judge, the raw list KeepParked bounds. Not saved.
 	Unjudged     []string       `json:"-"`
@@ -121,20 +133,23 @@ func New(version, account string, at time.Time, regions []string, findings []che
 	if kept == nil {
 		kept = []checks.Finding{}
 	}
-	skipped, blocked := splitSkips(regions, skipped)
+	skipped, blocked, notOffered := splitSkips(regions, skipped)
 	if skipped == nil {
 		skipped = []inventory.Skip{}
 	}
 	if blocked == nil {
 		blocked = []Blocked{}
 	}
+	if notOffered == nil {
+		notOffered = []NotOffered{}
+	}
 	if hidden != nil {
 		hidden.done()
 	}
 	return &Report{
 		Tool: "costhound", Version: version, Plan: "free", Account: account, ScannedAt: at.UTC(),
-		Regions: regions, TotalMonthlyUSD: total, Findings: kept, Skipped: skipped, BlockedRegions: blocked, PriceNote: PriceNote,
-		Hidden: hidden,
+		Regions: regions, TotalMonthlyUSD: total, Findings: kept, Skipped: skipped, BlockedRegions: blocked,
+		NotOffered: notOffered, PriceNote: PriceNote, Hidden: hidden,
 	}
 }
 
@@ -246,19 +261,11 @@ func (r *Report) Text(w io.Writer, showFix bool) {
 
 	r.writeRun(w)
 	if r.Plan == "free" {
-		if more := checks.NotIncluded("free"); len(more) > 0 {
-			var pro, team []string
-			for _, c := range more {
-				if c.Plan == license.PlanTeam {
-					team = append(team, c.Title)
-				} else {
-					pro = append(pro, c.Title)
-				}
-			}
-			p("costhound Pro also checks: %s.\n", strings.Join(pro, "; "))
-			if len(team) > 0 {
-				p("costhound Team adds: %s.\n", strings.Join(team, "; "))
-			}
+		if n := checks.Count(license.PlanPro); n > 0 {
+			p("Pro adds %d more checks (usage-based idle resources, AWS Compute Optimizer and Cost Optimization Hub advice, extended-support cliffs, ...): %s\n", n, license.RenewURL)
+		}
+		if checks.Count(license.PlanTeam) > 0 {
+			p("Team adds Organization-wide reports, Slack and CI gates.\n")
 		}
 		p("costhound Pro also writes each fix as a script to review and run, with a backup where AWS allows one, and a rollback (costhound plan).\n\n")
 	} else if len(r.Findings) > 0 {
@@ -388,7 +395,16 @@ func acct(f checks.Finding) string {
 // FindingID is a finding's stable ID: the same resource with the same problem
 // gets the same ID in every run, so it can be acknowledged in .costhound.yaml.
 func FindingID(account string, f checks.Finding) string {
-	sum := sha256.Sum256([]byte(account + "|" + f.Check + "|" + f.Region + "|" + keyOf(f)))
+	key := account + "|" + f.Check + "|" + f.Region + "|" + keyOf(f)
+	switch f.Check {
+	case "opensearch-oversized":
+		// Each successive downsize is a different repair on the same domain.
+		key += "|" + f.Facts["instance_type"] + "|" + f.Facts["nodes"]
+	case "redshift-oversized":
+		// The same for a cluster: its node type and count when reported.
+		key += "|" + f.Facts["node_type"] + "|" + f.Facts["nodes"]
+	}
+	sum := sha256.Sum256([]byte(key))
 	return "ch_" + hex.EncodeToString(sum[:])[:10]
 }
 

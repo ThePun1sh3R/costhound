@@ -573,8 +573,13 @@ func drain[O, Opt any](ctx context.Context, more func() bool, next func(context.
 }
 
 // ShortError turns an AWS error into its error code (e.g. AccessDenied), which
-// is all a reader needs; anything else is returned as-is.
+// is all a reader needs; anything else is returned as-is. A DNS NXDOMAIN on the
+// regional endpoint becomes NoSuchHost so the report can tell "not offered
+// here" from a real skip.
 func ShortError(err error) string {
+	if IsNoSuchHost(err) {
+		return NoSuchHost
+	}
 	var api smithy.APIError
 	if errors.As(err, &api) {
 		return api.ErrorCode()

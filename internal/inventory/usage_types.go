@@ -19,27 +19,40 @@ import (
 // resource was actually used over the last Days days (CloudWatch sums), and
 // the EKS clusters with their support status.
 type Usage struct {
-	Days                int
-	Reservations        []Reservation      // Team plans: commitments active, or retired in the last 30 days
-	NatBytes            map[string]float64 // NAT gateway ID -> bytes sent out to destinations
-	LBTraffic           map[string]float64 // LB ARN -> requests (ALB) or new flows (NLB)
-	LogIngest           map[string]float64 // log group name -> bytes ingested
-	EndpointBytes       map[string]float64 // interface or Gateway Load Balancer endpoint ID -> bytes processed
-	APICacheUse         map[string]float64 // REST API ID/stage -> cache hits + misses over the window
-	APIRequests         map[string]float64 // REST API ID/stage -> requests over the window
-	Clusters            []EKSCluster
-	PublicENIs          []ec2types.NetworkInterface // network interfaces holding a public IPv4
-	FlowLogs            map[string][]string         // log group -> the VPC flow logs writing to it ("fl-… (vpc-…)")
-	Databases           []Database                  // RDS and Aurora instances with their engine lifecycle
-	CostHub             *CostHub                    // account-wide; only on the "global" pseudo-region
-	CacheExtendedPrices map[string]ExtendedPrice    // ElastiCache node type -> extended-support $/node-hour (Price List)
-	TableActivity       map[string]float64          // DynamoDB table -> consumed read+write units over the window (table and indexes)
-	EFSConnections      map[string]float64          // EFS file system -> client connections over the window
-	StreamRecords       map[string]float64          // Kinesis stream -> records put + read over the window
-	CustomMetrics       map[string]int              // CloudWatch namespace (not AWS/*) -> metrics active in the last 3 hours
-	CustomMetricsCapped bool                        // listing stopped at the page cap: counts are a floor
+	Days             int
+	Reservations     []Reservation      // Commitments active, queued, or retired in the last 30 days
+	NatBytes         map[string]float64 // NAT gateway ID -> bytes sent out to destinations
+	LBTraffic        map[string]float64 // LB ARN -> requests (ALB) or new flows (NLB)
+	LogIngest        map[string]float64 // log group name -> bytes ingested
+	EndpointBytes    map[string]float64 // interface or Gateway Load Balancer endpoint ID -> bytes processed
+	APICacheUse      map[string]float64 // REST API ID/stage -> cache hits + misses over the window
+	APIRequests      map[string]float64 // REST API ID/stage -> requests over the window
+	Clusters         []EKSCluster
+	PublicENIs       []ec2types.NetworkInterface // network interfaces holding a public IPv4
+	FlowLogs         map[string][]string         // log group -> the VPC flow logs writing to it ("fl-… (vpc-…)")
+	Databases        []Database                  // RDS and Aurora instances with their engine lifecycle
+	CostHub          *CostHub                    // account-wide; only on the "global" pseudo-region
+	ComputeOptimizer *ComputeOptimizer           // account-wide; only on the "global" pseudo-region (when the hub is off or unread)
 
+	CacheExtendedPrices map[string]ExtendedPrice // ElastiCache node type -> extended-support $/node-hour (Price List)
+	TableActivity       map[string]float64       // DynamoDB table -> consumed read+write units over the window (table and indexes)
+	EFSConnections      map[string]float64       // EFS file system -> client connections over the window
+	StreamRecords       map[string]float64       // Kinesis stream -> records put + read over the window
+	CustomMetrics       map[string]int           // CloudWatch namespace (not AWS/*) -> metrics active in the last 3 hours
+	CustomMetricsCapped bool                     // listing stopped at the page cap: counts are a floor
+
+	S3Standard            map[string]S3StandardUsage // bucket name -> enough evidence to judge it
+	S3StandardPriceSource string
+
+	AI   *AIUsage
+	Glue *GlueUsage
 	Tail Tail // OpenSearch, SageMaker, Redshift, Transit Gateway (tail.go)
+}
+
+type S3StandardUsage struct {
+	Bytes      float64
+	Tiered     bool
+	MonthlyUSD float64 // current storage estimate, zero when regional rates are unavailable
 }
 
 // Database is an RDS or Aurora instance and where its engine version stands.

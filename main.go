@@ -77,6 +77,9 @@ func run(args []string) int {
 	if len(args) > 0 && args[0] == "explain" {
 		return explain(args[1:], os.Stdout)
 	}
+	if len(args) > 0 && args[0] == "buy" {
+		return buy(args[1:])
+	}
 	if len(args) > 0 && args[0] == "plan" {
 		return planBundle(args[1:])
 	}
@@ -90,6 +93,7 @@ func run(args []string) int {
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "costhound %s: find AWS resources that cost money for nothing (read-only)\n\nUsage: costhound [flags]\n"+
 			"       costhound explain <finding id>    everything costhound knows about one finding\n"+
+			"       costhound buy                     a purchase link with this account's ID already filled in\n"+
 			"       costhound plan -out <new folder>  Pro: fix scripts to review and run, with a backup where AWS allows one, and a rollback\n"+
 			"       costhound serve                   Team: local dashboard over saved runs\n"+
 			"       costhound keygen                  make the key that signs your reports (-sign)\n"+
@@ -305,6 +309,9 @@ func run(args []string) int {
 			return 1
 		}
 	}
+	if len(rep.NotOffered) > 0 {
+		report.WriteNotOffered(os.Stderr, rep.NotOffered)
+	}
 	if *asJSON {
 		if err := rep.JSON(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "costhound: %v\n", err)
@@ -422,18 +429,21 @@ func loadBuckets(ctx context.Context, cfg aws.Config, regions []string) bucketsB
 	return out
 }
 
-func scan(ctx context.Context, cfg aws.Config, account string, regions []string, o checks.Options, workers int, buckets bucketsByRegion, owners owner.Keys) ([]checks.Finding, []checks.Cliff, []inventory.Skip, map[string]string, []string, []string, []string) {
+func scan(ctx context.Context, cfg aws.Config, account string, regions []string, o checks.Options, workers int, buckets bucketsByRegion, owners owner.Keys) ([]checks.Finding, []checks.Cliff, []inventory.Skip, map[string]string, []string, []string, []string, map[string]map[string]string, map[string]inventory.NodeGroup, map[string]inventory.Warehouse) {
 	var (
 		mu          sync.Mutex
 		findings    []checks.Finding
 		cliffs      []checks.Cliff
 		skipped     []inventory.Skip
-		stopped     []string // "|region|id": for the diff (report.Stopped)
-		eksClusters []string // "|region|name": for the diff (report.EKSClusters)
-		unjudged    []string // "|region|check|key": for the diff (report.Unjudged)
-		standard    int      // standard-resolution single-metric alarms, for the account's 10 free ones
-		custom      int      // custom metrics in all (paid plans), for ec2-detailed-monitoring's tier
-		customOK    = true   // every region's custom metrics were read
+		stopped     []string                           // "|region|id": for the diff (report.Stopped)
+		eksClusters []string                           // "|region|name": for the diff (report.EKSClusters)
+		unjudged    []string                           // "|region|check|key": for the diff (report.Unjudged)
+		asgMembers  = map[string]map[string]string{}   // region → instance ID → Auto Scaling group name
+		searchNodes = map[string]inventory.NodeGroup{} // OpenSearch data-node groups, for the diff (report.OpenSearchDataNodes)
+		warehouses  = map[string]inventory.Warehouse{} // Redshift clusters by ARN, to verify a resize (report.RedshiftClusters)
+		standard    int                                // standard-resolution single-metric alarms, for the account's 10 free ones
+		custom      int                                // custom metrics in all (paid plans), for ec2-detailed-monitoring's tier
+		customOK    = true                             // every region's custom metrics were read
 		done        int
 		wg          sync.WaitGroup
 	)
@@ -498,7 +508,7 @@ func scan(ctx context.Context, cfg aws.Config, account string, regions []string,
 				for _, x := range cl {
 					all = append(all, checks.Finding{TagRef: x.TagRef})
 				}
-				owner.Attach(ctx, inv, all, taggingClient(c), owners)
+				owner.AttachWithNativeTags(ctx, inv, all, taggingClient(c), owners, serviceOwnerTags(ctx, c, inv, all))
 				f = all[:len(f)]
 				if o.Creators {
 					stampCreated(inv, f)
@@ -519,6 +529,9 @@ func scan(ctx context.Context, cfg aws.Config, account string, regions []string,
 				} else {
 					customOK = false
 				}
+				if names := inventory.InstanceASGNames(inv.Instances); len(names) > 0 {
+					asgMembers[region] = names
+				}
 				for _, in := range inv.Instances {
 					if s := in.State; s != nil && (s.Name == "stopped" || s.Name == "stopping") {
 						stopped = append(stopped, "|"+region+"|"+aws.ToString(in.InstanceId))
@@ -527,9 +540,11 @@ func scan(ctx context.Context, cfg aws.Config, account string, regions []string,
 				for _, name := range inv.EKSNames { // every listed cluster, even one whose details couldn't be read: it exists
 					eksClusters = append(eksClusters, "|"+region+"|"+name)
 				}
+				recordOpenSearchDataNodes(inv, searchNodes)
 				for _, u := range inv.Unjudged {
 					unjudged = append(unjudged, "|"+region+"|"+u)
 				}
+				recordRedshiftClusters(inv, warehouses)
 				done++
 				fmt.Fprintf(os.Stderr, "  %-16s done (%d/%d)\n", region, done, len(regions))
 				mu.Unlock()
@@ -548,7 +563,7 @@ func scan(ctx context.Context, cfg aws.Config, account string, regions []string,
 	unjudged = append(unjudged, indexParked...)
 	sort.Strings(stopped)
 	sort.Strings(eksClusters)
-	return findings, cliffs, append(skipped, buckets.skips...), sources, stopped, unjudged, eksClusters
+	return findings, cliffs, append(skipped, buckets.skips...), sources, stopped, unjudged, eksClusters, asgMembers, searchNodes, warehouses
 }
 
 // globalFindings runs the checks on account-wide services (Route 53) once
@@ -557,6 +572,8 @@ func globalFindings(ctx context.Context, cfg aws.Config, o checks.Options, owner
 	c := cfg.Copy()
 	c.Region = "us-east-1"
 	g := inventory.LoadGlobal(ctx, inventory.GlobalClients{Route53: route53.NewFromConfig(c), Alarms: cloudwatch.NewFromConfig(c)})
+	loadGlobalShield(ctx, cfg, g, o)
+	loadGlobalCloudFront(ctx, cfg, g, o)
 	f := youngZonesOut(ctx, c, o, g, checks.Run(g, o))
 	owner.Attach(ctx, g, f, taggingClient(c), owners)
 	var unjudged []string // "|global|check|key", for the diff (report.Unjudged)
@@ -644,7 +661,7 @@ func scanAccount(ctx context.Context, cfg aws.Config, account string, st setting
 		return nil, fmt.Errorf("can't list regions (%s); pass -regions to choose them yourself", inventory.ShortError(err))
 	}
 	fmt.Fprintf(os.Stderr, "costhound: scanning account %s in %d region(s)...\n", account, len(regions))
-	findings, cliffs, skipped, priceSources, stopped, unjudged, eksClusters := scan(ctx, cfg, account, regions, st.o, st.concurrency, loadBuckets(ctx, cfg, regions), st.owners)
+	findings, cliffs, skipped, priceSources, stopped, unjudged, eksClusters, asgMembers, searchNodes, warehouses := scan(ctx, cfg, account, regions, st.o, st.concurrency, loadBuckets(ctx, cfg, regions), st.owners)
 	gf, gs, gu, g := globalFindings(ctx, cfg, st.o, st.owners)
 	// Orphan alarms a Route 53 health check reads are left out, now that the health checks are read.
 	var hcParked []string
@@ -654,7 +671,7 @@ func scanAccount(ctx context.Context, cfg aws.Config, account string, st setting
 	findings, skipped = append(findings, af...), append(skipped, as...)
 	paid := license.Rank(st.o.Plan) >= license.Rank(license.PlanPro)
 	var parked []string
-	findings, cliffs, skipped, parked = paidAccount(ctx, cfg, st, account, findings, cliffs, skipped) // paid plans: the hub, commitments, Savings Plans
+	findings, cliffs, skipped, parked = paidAccount(ctx, cfg, st, account, regions, findings, cliffs, skipped, asgMembers) // paid plans: the hub, commitments, Savings Plans
 	unjudged = append(unjudged, parked...)
 	rep := report.New(version, account, st.o.Now, regions, findings, skipped, st.minUSD)
 	rep.Plan = st.o.Plan
@@ -663,7 +680,9 @@ func scanAccount(ctx context.Context, cfg aws.Config, account string, st setting
 	rep.PriceNote = report.PriceNoteFor(priceSources)
 	rep.Stopped = stopped
 	rep.EKSClusters = eksClusters
+	rep.OpenSearchDataNodes = searchNodes
 	rep.Unjudged = unjudged
+	rep.RedshiftClusters = warehouses
 	rep.SetUpcoming(cliffs)
 	rep.Settings = fmt.Sprintf("min-usd=%g snapshot-age=%d stopped-days=%d secret-days=%d min-log-gib=%g usage-days=%d min-ingest-gib=%g",
 		st.minUSD, st.o.SnapshotAgeDays, st.o.StoppedDays, st.o.SecretDays, st.o.MinLogGiB, st.o.UsageDays, st.o.MinIngestGiBMonth)

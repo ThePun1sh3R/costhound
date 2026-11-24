@@ -135,6 +135,8 @@ var neverCalled = map[string]string{
 	"DescribeLaunchTemplateVersions":            "user data",
 	"DescribeVpnConnections":                    "VPN tunnel keys",
 	"GetVpnConnectionDeviceSampleConfiguration": "VPN tunnel keys",
+	"DescribeVirtualInterfaces":                 "Direct Connect BGP auth keys",
+	"DescribeRouterConfiguration":               "Direct Connect customer router config",
 	"GetFunction":                               "function code",
 }
 

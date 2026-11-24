@@ -1,0 +1,32 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EMRServerlessAndNeptuneAnalytics",
+      "Effect": "Allow",
+      "Action": [
+        "emr-serverless:ListApplications",
+        "emr-serverless:GetApplication",
+        "emr-serverless:ListJobRuns",
+        "emr-serverless:ListTagsForResource",
+        "neptune-graph:ListGraphs",
+        "neptune-graph:GetGraph",
+        "neptune-graph:ListTagsForResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "KeyspacesMetadata",
+      "Effect": "Allow",
+      "Action": [
+        "cassandra:Select"
+      ],
+      "Resource": [
+        "arn:*:cassandra:*:*:/keyspace/system/*",
+        "arn:*:cassandra:*:*:/keyspace/system_schema/*",
+        "arn:*:cassandra:*:*:/keyspace/system_schema_mcs/*",
+        "arn:*:cassandra:*:*:/keyspace/system_multiregion_info/*"
+      ]
+    }
+  ]
+}

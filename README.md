@@ -6,7 +6,7 @@ Website, a demo report and Pro/Team keys: https://costhound.dev
 
 ```
 $ costhound
-costhound v0.3.0 (free) · AWS waste report
+costhound v0.4.0 (free) · AWS waste report
 Account 123456789012 · 17 region(s) · 2026-11-19 09:02 UTC
 
 Estimated waste: $1,248.20 / month  (about $14,978.40 / year)
@@ -38,12 +38,32 @@ AWS bills keep growing in the same places: disks attached to nothing, snapshots 
 - **Read-only.** It only calls read APIs (`Describe`, `List`, `Get` and the like) and never changes anything.
 - **Local.** Your data stays on your machine (unless you set up Team's Slack summary). No account, no telemetry, no SaaS with access to your AWS.
 
+## Install
+
+Linux, macOS, and AWS CloudShell:
+
+```
+curl -fsSL https://raw.githubusercontent.com/ThePun1sh3R/costhound/main/install.sh | sh
+```
+
+Pin a version with `COSTHOUND_VERSION` (for example `v0.3.0`):
+
+```
+curl -fsSL https://raw.githubusercontent.com/ThePun1sh3R/costhound/main/install.sh | COSTHOUND_VERSION=v0.3.0 sh
+```
+
+Or download the binary and `SHA256SUMS` from the [Releases](https://github.com/ThePun1sh3R/costhound/releases) page and check:
+
+```
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
 ## Plans
 
 | | Free | Pro | Team |
 |---|---|---|---|
 | Who | anyone | one person, up to 3 AWS accounts | a company, every account |
-| Checks | 43 classic waste checks | + 43 checks: usage-based, extended support, AWS Cost Optimization Hub | + 3 checks: Savings Plans and Reserved Instances to buy or about to end, databases idle at the same hours every week |
+| Checks | 43 classic waste checks | + 66 checks: usage-based, extended support, AWS Cost Optimization Hub, Compute Optimizer | + 3 checks: Savings Plans and Reserved Instances to buy or about to end, databases idle at the same hours every week |
 | Report | text, JSON | + interactive HTML report, "new since last run", cost-cliff calendar, redacted and signed copies | + one report for the whole AWS Organization, Terraform state mapping |
 | Fixes | a fix command per finding | + fix bundles: each fix as a script that checks again, backs up, changes, verifies, with a rollback | + one folder per account of the Organization |
 | Savings | | verified savings ledger: each fix costhound confirms, counted once, and what it has saved so far | + summed across the Organization |
@@ -122,17 +142,39 @@ A license key is checked offline and is tied to the AWS accounts (or AWS Organiz
 | Lambda functions whose calls keep failing | Functions with 10% or more failed calls (100+) over the window, still failing in the last 3 days, with what the failed calls cost at most (listed from $5/mo); not counted in the total (fixing the bug lowers the bill only when the failures were retries) |
 | Lambda provisioned concurrency nobody uses | Versions and aliases kept warm for calls that don't come over the usage window (none, or fewer than allocated even with a quarter to spare; callers that bypass the alias), priced at the provisioned-concurrency rate; with Application Auto Scaling, its minimum |
 | Aurora Serverless v2 clusters that could pause when idle | Clusters held at a minimum above 0 ACUs while their instances sit idle for hours: at 0 an instance pauses after 5 idle minutes and isn't billed for capacity, priced per idle stretch at the capacity measured then (the writer pauses only when the whole cluster is idle; binary logging, logical replication, global databases and provisioned instances keep it awake) |
+| ECS services with running tasks and no load balancer traffic | Active services older than 15 days with zero traffic on every ALB or NLB target group on every full UTC day of the usage window (14 by default). Sparse metrics can produce low-confidence, unpriced findings when target group health still reports. Services without a reliable traffic signal stay unjudged. Linux Fargate On-Demand is priced at regional rates for the current task count. EC2, Fargate Spot and Windows findings are unpriced. |
 | Fargate services sized bigger than their busiest task needs | Linux Fargate services whose busiest task's CPU and memory peaks over the window fit a cheaper valid task size (25% CPU and 33% memory to spare), priced for the tasks running now; auto-scaled services and ones deployed inside the window aren't judged; Fargate Spot services are flagged, not priced |
+| ElastiCache clusters a node size bigger than their peak load needs | Node-based Redis OSS, Valkey and Memcached caches (a replication group or a standalone cluster) whose busiest node's peaks over at least 30 full UTC days fit one node size down in the same family: peak used memory at most half the smaller node's advertised memory (Price List memory includes reserved-memory-percent, default 25%), engine CPU at or below 40% (Memcached scaled by current/target vCPUs; host CPU checked too when the target has 2 vCPUs), Evictions 0 every day, and no NetworkBandwidthIn/Out or NetworkPacketsPerSecondAllowanceExceeded over the window, with CPUUtilization reported on every day on every node. Priced from the Price List as the hourly difference of every node, On-Demand; reserved nodes are never counted as savings (a covered cache is flagged unpriced). Burstable, previous-generation and data-tiering types, caches mid-change, ones with only host CPU (no EngineCPUUtilization), and ones idle-elasticache owns aren't judged |
 | CloudWatch custom metrics: where the monitoring bill comes from | Namespaces with the most custom metrics (Container Insights, the CloudWatch agent, your apps) and what they cost |
+| Large S3 Standard buckets without tiering | Buckets with at least 1 TiB in S3 Standard in the latest daily sample from the past 3 days, without enabled lifecycle transitions or expirations or signs of Intelligent-Tiering. Shows estimated monthly storage cost at regional list rates. Savings depend on object access patterns and stay unpriced. |
 | EFS file systems nobody connects to | File systems with zero client connections in 14 days |
 | Kinesis streams with no records | Provisioned shards ($10.95/mo each) and On-demand Standard streams ($29.20/mo) with nothing written or read in 14 days. Accounts on On-demand Advantage pay no per-stream fee, so their idle on-demand streams aren't reported. |
 | OpenSearch and Elasticsearch domains past standard support | Since 2026-11-07 the oldest versions (Elasticsearch up to 7.8 except 5.6 and 6.8, OpenSearch 1.0-1.2 and 2.3-2.9) pay extended support equal to their instance price, so their instance bill doubled; the rest pay per normalized instance hour. Warned 180 days ahead |
 | OpenSearch domains nobody searches or writes to | Domains with zero requests, searches and indexing in 14 days, priced with their nodes and storage |
 | Stopped or idle Transfer Family servers | Stopped servers, and online servers that moved no bytes or files in 90 full days and today so far (`-usage-days` doesn't change the 90). An online server is medium when an older CloudWatch datapoint shows it existed before the 90 days, and low when CloudWatch has no datapoint at all, since it may be new. AWS bills each enabled protocol until the server is deleted: $219/mo in us-east-1, priced at the region's rate. The finding counts the service-managed users and SSH public keys a delete removes. |
 | Route 53 Resolver endpoints with no queries | Inbound and outbound endpoints with no DNS query in 30 days (or the usage window, if longer) and today so far, while their health metric reported every day; outbound counts queries through rules shared with other accounts. $91.25/mo per IP address in us-east-1 (an endpoint has at least two), priced at the region's rate; endpoints on Outposts aren't judged |
+| Direct Connect connections that carry nothing or are down | Dedicated and hosted connections that bill port-hours while down for 14+ days, up with no virtual interface series and no traffic, up with VIFs but near-zero traffic (likely standby, low confidence), or still requested/pending 90+ days after the LOA. VIF presence comes from CloudWatch AWS/DX only (DescribeVirtualInterfaces returns BGP keys and is never called). Priced from the region's Price List by capacity and billing mode (us-east-1 fallback: 1G dedicated $219/mo, 10G $1,642.50/mo); partner and colo fees on top, unpriced |
+| Stopped or unattached Lightsail resources and load balancers with no instances | Stopped instances are priced at their plan, low confidence (AWS states a stopped rate only for Lightsail for Research). Unattached static IPs cost $0.005/hr after a one-hour grace period, unattached disks cost $0.10 per allocated GB per month, and load balancers with no instances list at $18/mo. Instance estimates use the exact regional bundle when available. |
+| AppStream fleets with no sessions | Running WorkSpaces Applications fleets with zero in-use capacity across the usage window. Always-On and On-Demand rates reflect their different idle billing. Elastic fleets have no idle instance charge. |
+| OpenSearch Ingestion pipelines with no incoming records | Active pipelines with zero observed records written to their buffers across the usage window. The estimate uses the configured minimum Ingestion OCUs at the regional list rate. Stopped pipelines consume no Ingestion OCUs. |
+| OpenSearch data nodes with room to downsize | Daily data-node CPU and JVM peaks plus minimum free storage must fit one smaller same-family size with headroom. Requires a supported EBS configuration. Reserved or reservation-unknown configurations are left unpriced. |
+| Provisioned Redshift clusters with room to downsize | Daily CPU and disk peaks must fit one smaller size or one fewer node with headroom. Covers supported provisioned cluster configurations. Reserved or reservation-unknown configurations are left unpriced. |
+| Amazon MQ brokers with no messaging activity | ActiveMQ and RabbitMQ brokers whose connection, consumer, backlog and engine-specific metrics report zero over at least 14 full days. Broker instance estimates use the exact engine, deployment mode, instance type and region from the AWS Price List. Storage is billed separately. |
+| App Runner services with no requests | Running services with no HTTP requests over the usage window, with service-level CPU utilization reported every full day. Pausing saves the memory charge for the minimum provisioned instances and makes the endpoint unavailable. Source images and logs can still bill. |
+| DocumentDB elastic clusters with no connections or operations | Active elastic clusters with no customer connections or read/write operations over the window, with live storage reported every full day. A stopped elastic cluster still bills storage and AWS restarts it after seven days. Deletion saves vCPU-hours across all shard nodes and live storage measured by CloudWatch. Retained manual snapshots can still bill. |
+| Shield Advanced subscriptions with no protected resources | Checks that Shield Advanced is subscribed and no protections are configured in the account. The published $3,000/mo rate applies once per consolidated billing family. A priced renewal opportunity requires a confirmed standalone account with auto-renew enabled. |
+| CloudFront custom certificates using dedicated-IP SSL | Reports one finding per custom certificate set to dedicated-IP SSL across the account. AWS lists $600/mo per certificate, prorated hourly, even when multiple distributions share it. Check viewer compatibility before switching those distributions to SNI-only. |
 | FSx file systems nobody reads or writes | Windows, Lustre, NetApp ONTAP and OpenZFS file systems with no client reads or writes in 30 days (or the usage window, if longer), on days CloudWatch has data for. High confidence when no client was connected either (ONTAP doesn't publish that, and Windows only at 32 MBps or more). Priced from the Price List for the file system's deployment and storage; third-generation ONTAP, Intelligent-Tiering storage and Lustre metadata IOPS aren't priced. A final backup on delete bills about $0.05/mo for each GiB used in us-east-1. |
 | OpenSearch Serverless collection groups and collections nobody uses | An empty NextGen collection group held at a minimum above 0 OCUs (AWS bills it while the group exists); a NextGen group held above 0 while its collections had no request in 14 days (at 0 it scales to zero after 10 idle minutes); Classic collections with no request in 90 days, per group and per pool outside groups (a KMS key, vector search apart), their OCUs priced only when the whole pool is idle and their storage either way, and ones with no request in 14 days but some in 90 named as rarely used and kept; a NextGen collection with no request and no growth in its hot storage in 90 days, at that storage. Prices never count capacity that's gone since. A Bedrock knowledge base storing its vectors in a collection is named, with the order to delete in |
 | SageMaker endpoints with no invocations | Real-time endpoints whose instances ran for 14 days with zero invocations (an ml.g5.xlarge instance is about $1,028/mo in us-east-1) |
+| Synthetics canaries failing every run | Running canaries with zero successful scheduled runs on at least 30 full UTC days. Estimates run charges at regional list rates for `rate(...)` schedules; `cron(...)` schedules stay unpriced. Lambda, S3 and other related charges are outside the estimate. |
+| Bedrock Provisioned Throughput with no invocations | InService model units with zero reported invocations over the usage window, or older than 15 days with no invocation metric under the ARN in the last two weeks. Prices only uncommitted model units with datapoints under the exact ARN. Shows renewal dates for commitments. |
+| SageMaker notebook instances to review | InService notebook instances last modified at least 30 days ago. Skips instances with lifecycle configurations, which can stop idle notebooks. Low confidence because AWS documents no notebook usage metric. Estimates compute savings from stopping. EBS keeps billing and its cost is shown separately. |
+| Kendra indexes with no queries | ACTIVE indexes with zero reported queries over the usage window, or older than 15 days with no query metric in the last two weeks. Prices the edition and additional query and storage capacity. GenAI Enterprise is low confidence because the metric may omit Retrieve traffic. |
+| Glue interactive sessions and development endpoints left READY | READY interactive sessions whose CreatedOn and IdleTimeout still leave billable DPU time (priced as hours left until the idle timeout ends it; a statement would reset that timer). READY legacy development endpoints unmodified for 7+ days (low confidence; priced per DPU-hour × 730). Stopping or deleting ends the DPU-hour bill. |
+| EMR Serverless applications paying for warm workers with no job runs | STARTED applications with pre-initialized capacity, no active or recently submitted batch or streaming jobs and worker data on every full day. Prices the observed started time projected monthly, or 730 hours/month with auto-stop off. |
+| Neptune Analytics graphs with no queries | AVAILABLE graphs with daily graph metrics and no OpenCypher query activity. Shows the primary’s running cost and the portion saved by stopping. An absent query series gives an unpriced, low-confidence finding. |
+| Keyspaces tables with underused provisioned throughput | Both reads and writes at or below 25% of provisioned capacity. Compares a lower capacity floor with on-demand at the measured usage. Daily and recent provisioned metrics prove coverage. Missing intervals in complete consumption reads count as zero. Multi-Region tables remain unpriced. |
 | Redshift clusters nobody connects to | Provisioned clusters with zero database connections in 14 days: pause them and the node bill stops (no pause is offered for DS2, a retired node type, or for a cluster AWS can't pause: outside a VPC, with an HSM or with automated snapshots off; the finding says what to do instead) |
 | Transit Gateway attachments with no traffic | Attachments with zero bytes in or out in 14 days, $36.50/mo each |
 | ElastiCache clusters nobody reads or writes | Redis OSS, Valkey and Memcached clusters (whole replication groups) with zero commands on every node in 14 days |
@@ -150,6 +192,7 @@ A license key is checked offline and is tied to the AWS accounts (or AWS Organiz
 | MemoryDB clusters nobody reads or writes | Clusters with no command of any kind on any node in 14 days, priced per node-hour by node type and engine; members of a Multi-Region cluster are low |
 | Site-to-Site VPN connections with every tunnel down | Every tunnel down in every CloudWatch sample for 14 days. Unpriced: $36.50/mo standard, $7.30 on a VPN Concentrator, $438 with large tunnels, and only EC2 can tell which (that call also returns the tunnel keys, so costhound never makes it) |
 | AWS Cost Optimization Hub: rightsize, idle, Graviton | AWS's own recommendations at your real prices, without the duplicates of the checks above |
+| AWS Compute Optimizer rightsizing (when the hub is off) | Compute Optimizer's over-provisioned EC2, Auto Scaling, EBS, Lambda, RDS and ECS advice, plus idle recommendations, when Cost Optimization Hub isn't on (the hub already includes it when it is) |
 
 ### Team
 
@@ -161,14 +204,6 @@ A license key is checked offline and is tied to the AWS accounts (or AWS Organiz
 
 Every enabled region is scanned in parallel. Regions your account can't use are reported once, not as errors.
 
-## Install
-
-Download the binary for your system from the Releases page, or build the free version from source:
-
-```
-go install github.com/ThePun1sh3R/costhound@latest
-```
-
 ## Run
 
 ```
@@ -177,6 +212,7 @@ costhound -profile my-account      # a named AWS profile
 costhound -regions eu-west-1,us-east-1
 costhound -json > waste.json       # for scripts and spreadsheets
 costhound -no-fix                  # hide the fix commands
+costhound buy                      # purchase link with this account's ID already filled in
 ```
 
 Pro and Team:
@@ -341,24 +377,37 @@ ignore:
 
 ## Permissions
 
-costhound needs read-only access. Use the minimal policy in [`iam-policy.json`](iam-policy.json). It grants no API whose job is to return object data, secret values, VPN tunnel keys, user data or log contents. Its last statement works only through EC2's AMI reference check (`aws:CalledVia ec2-images.amazonaws.com`): EC2 can look at launch templates, SSM parameters and Image Builder recipes for costhound, but costhound can't read them itself. costhound reads Route 53 records only to match health checks, and keeps only the health check IDs. To create it:
+costhound needs read-only access. Use the minimal policy in [`iam-policy.json`](iam-policy.json). It grants no API whose job is to return object data, secret values, VPN tunnel keys, Direct Connect BGP keys, user data or log contents. Its last statement works only through EC2's AMI reference check (`aws:CalledVia ec2-images.amazonaws.com`): EC2 can look at launch templates, SSM parameters and Image Builder recipes for costhound, but costhound can't read them itself. costhound reads Route 53 records only to match health checks, and keeps only the health check IDs. To create it:
 
 ```
 aws iam create-policy --policy-name costhound-readonly --policy-document file://iam-policy.json
 ```
 
-To keep even settings that can hold secrets away from costhound (see Safety), use [`iam-policy-strict.json`](iam-policy-strict.json) instead: the same policy without `lambda:ListFunctions`, `lambda:ListEventSourceMappings`, `elasticmapreduce:DescribeCluster`, `elasticmapreduce:ListSteps`, `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`, `bedrock:GetKnowledgeBase`, `transfer:DescribeServer`, `dms:DescribeReplicationInstances`, `dms:DescribeReplicationTasks`, `dms:DescribeReplicationConfigs`, `dms:DescribeReplications`, `elasticloadbalancing:DescribeListeners`, `elasticloadbalancing:DescribeRules`, `ec2:DescribeSpotFleetRequests` and API Gateway's stage reads. The Lambda x86, Lambda errors, API Gateway cache, idle EMR, Fargate sizing, Transfer and DMS checks then list what they couldn't read; Lambda provisioned concurrency may miss idle configs and goes unpriced; an Application Load Balancer with no targets is medium, since its listeners can't be read; orphan alarms on Lambda functions aren't reported; a Spot Fleet's detailed-monitoring finding stays unresolved while that call is denied; and idle OpenSearch Serverless collections don't name their Bedrock knowledge base. Everything else runs as usual.
+For the EMR Serverless, Neptune Analytics and Keyspaces Pro checks, attach [`iam-policy-pro-services.json`](iam-policy-pro-services.json) alongside the base policy. AWS limits each managed policy to 6,144 characters. Keyspaces listings use `cassandra:Select` scoped to AWS system keyspaces.
 
-For `-creators` (Pro), also attach [`iam-policy-creators.json`](iam-policy-creators.json). Its one permission, `cloudtrail:LookupEvents`, reads your account's audit log, so it's in neither policy above.
+```sh
+aws iam create-policy --policy-name costhound-pro-services --policy-document file://iam-policy-pro-services.json
+```
+
+To keep even settings that can hold secrets away from costhound (see Safety), use [`iam-policy-strict.json`](iam-policy-strict.json) instead of the base policy. It omits `lambda:ListFunctions`, `lambda:ListEventSourceMappings`, `elasticmapreduce:DescribeCluster`, `elasticmapreduce:ListSteps`, `emr-serverless:GetApplication`, `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`, `bedrock:GetKnowledgeBase`, `transfer:DescribeServer`, `dms:DescribeReplicationInstances`, `dms:DescribeReplicationTasks`, `dms:DescribeReplicationConfigs`, `dms:DescribeReplications`, `elasticloadbalancing:DescribeListeners`, `elasticloadbalancing:DescribeRules`, `ec2:DescribeSpotFleetRequests`, `apprunner:DescribeService` and API Gateway's stage reads. The Lambda x86, Lambda errors, API Gateway cache, idle EMR, idle ECS services, Fargate sizing, Transfer and DMS checks then list what they couldn't read; Lambda provisioned concurrency may miss idle configs and goes unpriced; an Application Load Balancer with no targets is medium, since its listeners can't be read; orphan alarms on Lambda functions aren't reported; a Spot Fleet's detailed-monitoring finding stays unresolved while that call is denied; idle OpenSearch Serverless collections don't name their Bedrock knowledge base, and idle App Runner services can be reported without a price.
+
+For Neptune Analytics and Keyspaces on the strict policy, attach [`iam-policy-strict-pro-services.json`](iam-policy-strict-pro-services.json). The EMR Serverless check needs the application configuration omitted in strict mode.
+
+```sh
+aws iam create-policy --policy-name costhound-readonly-strict --policy-document file://iam-policy-strict.json
+aws iam create-policy --policy-name costhound-pro-services-strict --policy-document file://iam-policy-strict-pro-services.json
+```
+
+For `-creators` (Pro), also attach [`iam-policy-creators.json`](iam-policy-creators.json). Its one permission, `cloudtrail:LookupEvents`, reads your account's audit log, so it lives in its own policy.
 
 For an AWS Organization, deploy [`deploy/costhound-readonly-role.yaml`](deploy/costhound-readonly-role.yaml) to every account with one CloudFormation StackSet (instructions inside), then run `costhound -org` from the management account or a delegated administrator account. Cost Optimization Hub's advice for every account needs the management account or the hub's own delegated administrator.
 
-If a permission is missing, costhound skips only that check and lists what it couldn't read at the end of the report. Without `tag:GetResources`, findings outside EC2, Secrets Manager, API Gateway stages and Global Accelerator show no owner, and don't count as unowned.
+If a permission is missing, costhound skips only that check and lists what it couldn't read at the end of the report. Without `tag:GetResources`, findings outside EC2, Secrets Manager, API Gateway stages, Global Accelerator, EMR Serverless and Neptune Analytics show no owner, and don't count as unowned.
 
 ## Safety
 
-- **Read-only, enforced.** costhound calls only read APIs (`Describe`, `List`, `Get`, `Head`, `BatchGet`, `Lookup` and `Search`, plus `sts:AssumeRole` for `-org` scans), and refuses any other call inside the binary before it is sent. It also refuses the reads that return secret values or data (`GetSecretValue`, `GetObject`, `GetLogEvents`, `GetParameter`, `DescribeVpnConnections` and the like), whatever your permissions allow.
-- **Settings that can hold secrets are dropped on arrival.** A few describe calls the checks need also answer with settings where people sometimes paste passwords: Lambda `ListFunctions` (environment variables, and a container image's command), API Gateway `GetStages` (stage variables), EC2 `DescribeSpotFleetRequests` (a Spot Fleet launch specification's user data; costhound keeps only the request ID and state), and on Pro plans EMR `DescribeCluster` (configurations) and `ListSteps` (step arguments), Lambda `ListEventSourceMappings` (event filters), ECS `DescribeServices` (a Service Connect log driver's options, such as a Splunk token), `DescribeTaskDefinition` (container environment variables) and Bedrock `GetKnowledgeBase` (a vector store's connection string and database user; costhound keeps only the knowledge base's ID, name and OpenSearch Serverless collection). DMS reads can include Kerberos configuration, replication settings and failure messages. Load balancer `DescribeListeners` and `DescribeRules` answer with OIDC login settings and fixed response bodies: costhound keeps only each action's type. Transfer `DescribeServer` can include custom identity provider URLs and login banners. costhound drops those settings as each answer arrives: they are never stored, printed, logged or sent, and tests plant a secret in each to prove it. With `iam-policy-strict.json`, AWS refuses those calls, so nothing comes back at all.
+- **Read-only, enforced.** costhound calls only read APIs (`Describe`, `List`, `Get`, `Head`, `BatchGet`, `Lookup` and `Search`, plus `sts:AssumeRole` for `-org` scans), and refuses any other call inside the binary before it is sent. It also refuses the reads that return secret values or data (`GetSecretValue`, `GetObject`, `GetLogEvents`, `GetParameter`, `DescribeVpnConnections`, `DescribeVirtualInterfaces` and the like), whatever your permissions allow.
+- **Settings that can hold secrets are dropped on arrival.** A few describe calls the checks need also answer with settings where people sometimes paste passwords: Lambda `ListFunctions` (environment variables, and a container image's command), API Gateway `GetStages` (stage variables), EC2 `DescribeSpotFleetRequests` (a Spot Fleet launch specification's user data; costhound keeps only the request ID and state), and on Pro plans EMR `DescribeCluster` (configurations) and `ListSteps` (step arguments), Lambda `ListEventSourceMappings` (event filters), ECS `DescribeServices` (a Service Connect log driver's options, such as a Splunk token), `DescribeTaskDefinition` (container environment variables) and Bedrock `GetKnowledgeBase` (a vector store's connection string and database user; costhound keeps only the knowledge base's ID, name and OpenSearch Serverless collection). DMS reads can include Kerberos configuration, replication settings and failure messages. Load balancer `DescribeListeners` and `DescribeRules` answer with OIDC login settings and fixed response bodies: costhound keeps only each action's type. Transfer `DescribeServer` can include custom identity provider URLs and login banners. EMR Serverless `GetApplication` returns runtime configuration, which costhound discards. App Runner `DescribeService` can include runtime environment variables and build configuration. Costhound keeps only the instance memory and auto scaling configuration ARN. costhound drops those settings as each answer arrives: they are never stored, printed, logged or sent, and tests plant a secret in each to prove it. With `iam-policy-strict.json`, AWS refuses those calls, so nothing comes back at all.
 - **CloudTrail only when you ask.** With `-creators` (Pro), costhound reads CloudTrail's event history, your account's audit log, for findings with no owner tag, to name who created each resource, and for empty hosted zones, to leave out the ones made in the last 24 hours (CreateHostedZone, zone IDs only). It keeps the creating event's name, date and caller, and drops the rest of each event as it arrives (request parameters, source IP addresses, access keys). The creator sits next to "no owner tag" and never counts as an owner. Without the flag, costhound refuses `LookupEvents` itself. With `-creators`, saved runs hold people's names; `-redact` hides them.
 - **Every run says what it did.** The report lists each AWS call it made (`run` in `-json`), and its run ID is in every request's user agent, so your own CloudTrail can confirm it: the text report gives the `aws cloudtrail lookup-events` command, which should print `[]`.
 - **The fix commands, and the Pro fix bundles, are for you to review and run.** costhound never runs them. Where AWS allows a backup, a destructive fix starts with one (a snapshot before deleting a volume, an AMI before terminating an instance, a 30-day recovery window before deleting a secret). Commands never overwrite existing lifecycle rules.

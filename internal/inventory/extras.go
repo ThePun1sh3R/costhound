@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
 	aatypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
 	"github.com/aws/aws-sdk-go-v2/service/backup"
+	backuptypes "github.com/aws/aws-sdk-go-v2/service/backup/types"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
@@ -99,6 +100,7 @@ type FastRestore struct {
 // RecoveryPoint is one AWS Backup recovery point.
 type RecoveryPoint struct {
 	Vault, ARN, ResourceArn, ResourceType string
+	PlanID                                string // the backup plan that made it ("" when made on demand or by another service)
 	Bytes                                 int64
 	Created                               *time.Time
 }
@@ -106,6 +108,7 @@ type RecoveryPoint struct {
 // FileSystem is an EFS file system.
 type FileSystem struct {
 	ID, Name, ThroughputMode string
+	AvailabilityZoneName     string // set ⇒ One Zone (Regional when empty)
 	MountTargets             int
 	Standard, IA, Archive    int64 // bytes per storage class
 	ProvisionedMiBps         float64
@@ -136,6 +139,7 @@ type ElastiCacheAPI interface {
 // replication group).
 type CacheCluster struct {
 	ID, Engine, Version, NodeType, ReplicationGroup string
+	ARN, Status                                     string // from DescribeCacheClusters: "available", "modifying", ...
 	Nodes                                           int
 	Created                                         *time.Time
 	NodeIDs                                         []string // "0001", ...; empty when the API didn't list them
@@ -165,6 +169,10 @@ type Bucket struct {
 	Created      *time.Time
 	HasLifecycle bool // any enabled rule
 	AbortsMPU    bool // an enabled rule aborts incomplete multipart uploads
+
+	RegionUnknown         bool // ListBuckets omitted the region and GetBucketLocation failed
+	LifecycleRead         bool
+	HasTransitionOrExpiry bool // an enabled rule transitions or expires current or noncurrent versions
 
 	Versioning        string // "Enabled", "Suspended", "" (never versioned), "?" (unread)
 	MFADelete         bool   // MFA Delete is on: S3 runs no lifecycle rules on the bucket
@@ -222,7 +230,8 @@ func loadExtras(ctx context.Context, r *Region, c Clients, skip func(string, err
 					continue
 				}
 				fs := FileSystem{ID: aws.ToString(f.FileSystemId), Name: aws.ToString(f.Name), MountTargets: int(f.NumberOfMountTargets),
-					ThroughputMode: string(f.ThroughputMode), ProvisionedMiBps: aws.ToFloat64(f.ProvisionedThroughputInMibps), Created: f.CreationTime}
+					ThroughputMode: string(f.ThroughputMode), AvailabilityZoneName: aws.ToString(f.AvailabilityZoneName),
+					ProvisionedMiBps: aws.ToFloat64(f.ProvisionedThroughputInMibps), Created: f.CreationTime}
 				if z := f.SizeInBytes; z != nil {
 					fs.Standard, fs.IA, fs.Archive = aws.ToInt64(z.ValueInStandard), aws.ToInt64(z.ValueInIA), aws.ToInt64(z.ValueInArchive)
 					if fs.Standard+fs.IA+fs.Archive == 0 {
@@ -251,6 +260,7 @@ func loadExtras(ctx context.Context, r *Region, c Clients, skip func(string, err
 					ID: aws.ToString(cc.CacheClusterId), Engine: aws.ToString(cc.Engine), Version: aws.ToString(cc.EngineVersion),
 					NodeType: aws.ToString(cc.CacheNodeType), ReplicationGroup: aws.ToString(cc.ReplicationGroupId),
 					Nodes: int(aws.ToInt32(cc.NumCacheNodes)), Created: cc.CacheClusterCreateTime, NodeIDs: cacheNodeIDs(cc.CacheNodes),
+					ARN: aws.ToString(cc.ARN), Status: aws.ToString(cc.CacheClusterStatus),
 				})
 			}
 		}); err != nil {
@@ -325,7 +335,7 @@ func loadRepos(ctx context.Context, r *Region, c ECRAPI) error {
 func LoadBuckets(ctx context.Context, list S3API, forRegion func(string) S3API) ([]Bucket, []Skip) {
 	var out []Bucket
 	var skips []Skip
-	p := s3.NewListBucketsPaginator(list, &s3.ListBucketsInput{})
+	p := s3.NewListBucketsPaginator(list, &s3.ListBucketsInput{MaxBuckets: aws.Int32(1000)})
 	if err := drain(ctx, p.HasMorePages, p.NextPage, func(o *s3.ListBucketsOutput) {
 		for _, b := range o.Buckets {
 			out = append(out, Bucket{Name: aws.ToString(b.Name), Region: aws.ToString(b.BucketRegion), Created: b.CreationDate})
@@ -338,7 +348,11 @@ func LoadBuckets(ctx context.Context, list S3API, forRegion func(string) S3API) 
 		if b.Region == "" {
 			// Not every S3 endpoint returns BucketRegion in ListBuckets.
 			b.Region = "us-east-1"
-			if loc, err := list.GetBucketLocation(ctx, &s3.GetBucketLocationInput{Bucket: aws.String(b.Name)}); err == nil {
+			loc, err := list.GetBucketLocation(ctx, &s3.GetBucketLocationInput{Bucket: aws.String(b.Name)})
+			if err != nil {
+				b.RegionUnknown = true
+				skips = append(skips, Skip{Region: "global", What: "s3:GetBucketLocation", Error: ShortError(err)})
+			} else {
 				switch c := string(loc.LocationConstraint); c {
 				case "":
 				case "EU":
@@ -352,6 +366,7 @@ func LoadBuckets(ctx context.Context, list S3API, forRegion func(string) S3API) 
 		var api smithy.APIError
 		switch {
 		case err == nil:
+			b.LifecycleRead = true
 			for _, rule := range lc.Rules {
 				if rule.Status != "Enabled" {
 					continue
@@ -363,8 +378,13 @@ func LoadBuckets(ctx context.Context, list S3API, forRegion func(string) S3API) 
 				if rule.NoncurrentVersionExpiration != nil {
 					b.ExpiresNoncurrent = true
 				}
+				if rule.Expiration != nil || rule.NoncurrentVersionExpiration != nil ||
+					len(rule.Transitions) != 0 || len(rule.NoncurrentVersionTransitions) != 0 {
+					b.HasTransitionOrExpiry = true
+				}
 			}
 		case errors.As(err, &api) && api.ErrorCode() == "NoSuchLifecycleConfiguration":
+			b.LifecycleRead = true
 		default:
 			skips = append(skips, Skip{Region: b.Region, What: "s3:GetLifecycleConfiguration", Error: ShortError(err)})
 			b.HasLifecycle, b.AbortsMPU, b.ExpiresNoncurrent = true, true, true // unknown: don't flag it
@@ -492,7 +512,7 @@ func loadRecoveryPoints(ctx context.Context, r *Region, c BackupAPI) error {
 					continue
 				}
 				r.RecoveryPoints = append(r.RecoveryPoints, RecoveryPoint{Vault: v, ARN: aws.ToString(x.RecoveryPointArn), ResourceArn: aws.ToString(x.ResourceArn),
-					ResourceType: aws.ToString(x.ResourceType), Bytes: aws.ToInt64(x.BackupSizeInBytes), Created: x.CreationDate})
+					ResourceType: aws.ToString(x.ResourceType), Bytes: aws.ToInt64(x.BackupSizeInBytes), Created: x.CreationDate, PlanID: planIDOf(x.CreatedBy)})
 			}
 		}); err != nil {
 			r.Skipped = append(r.Skipped, Skip{Region: r.Name, What: "backup:ListRecoveryPointsByBackupVault", Error: ShortError(err)})
@@ -556,4 +576,12 @@ func cacheNodeIDs(nodes []ectypes.CacheNode) []string {
 		}
 	}
 	return out
+}
+
+// planIDOf is the ID of the backup plan behind a recovery point ("" when none).
+func planIDOf(c *backuptypes.RecoveryPointCreator) string {
+	if c == nil {
+		return ""
+	}
+	return aws.ToString(c.BackupPlanId)
 }

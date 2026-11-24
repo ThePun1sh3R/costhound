@@ -173,17 +173,39 @@ var All = []Check{
 	{"lambda-errors", "Lambda functions whose calls keep failing", nil, license.PlanPro},
 	{"idle-provisioned-concurrency", "Lambda provisioned concurrency nobody uses", nil, license.PlanPro},
 	{"aurora-serverless-pause", "Aurora Serverless v2 clusters that could pause when idle", nil, license.PlanPro},
+	{"idle-ecs-service", "ECS services with running tasks and no load balancer traffic", nil, license.PlanPro},
 	{"fargate-oversized", "Fargate services sized bigger than their busiest task needs", nil, license.PlanPro},
+	{"elasticache-oversized", "ElastiCache clusters a node size bigger than their peak load needs", nil, license.PlanPro},
 	{"custom-metrics", "CloudWatch custom metrics: where the monitoring bill comes from", nil, license.PlanPro},
+	{"s3-standard-no-tiering", "Large S3 Standard buckets without tiering", nil, license.PlanPro},
 	{"idle-efs", "EFS file systems nobody connects to", nil, license.PlanPro},
 	{"idle-kinesis", "Kinesis streams with no records", nil, license.PlanPro},
 	{"opensearch-extended-support", "OpenSearch and Elasticsearch domains past standard support", nil, license.PlanPro},
 	{"idle-opensearch", "OpenSearch domains nobody searches or writes to", nil, license.PlanPro},
 	{"idle-transfer-server", "Stopped or idle Transfer Family servers", nil, license.PlanPro},
 	{"idle-resolver-endpoint", "Route 53 Resolver endpoints with no queries", nil, license.PlanPro},
+	{"idle-dx-connection", "Direct Connect connections that carry nothing or are down", nil, license.PlanPro},
+	{"lightsail-waste", "Stopped or unattached Lightsail resources and load balancers with no instances", nil, license.PlanPro},
+	{"idle-appstream-fleet", "AppStream fleets with no sessions", nil, license.PlanPro},
+	{"idle-osi-pipeline", "OpenSearch Ingestion pipelines with no incoming records", nil, license.PlanPro},
+	{"idle-mq", "Amazon MQ brokers with no messaging activity", nil, license.PlanPro},
+	{"idle-apprunner-service", "App Runner services with no requests", nil, license.PlanPro},
+	{"idle-docdb-elastic", "DocumentDB elastic clusters with no connections or operations", nil, license.PlanPro},
+	{"unused-shield-advanced", "Shield Advanced subscriptions with no protected resources", nil, license.PlanPro},
+	{"cloudfront-dedicated-ip-ssl", "CloudFront custom certificates using dedicated-IP SSL", nil, license.PlanPro},
 	{"idle-fsx", "FSx file systems nobody reads or writes", nil, license.PlanPro},
 	{"idle-opensearch-serverless", "OpenSearch Serverless collection groups and collections nobody uses", nil, license.PlanPro},
 	{"idle-sagemaker-endpoint", "SageMaker endpoints with no invocations", nil, license.PlanPro},
+	{"idle-bedrock-provisioned-throughput", "Bedrock Provisioned Throughput with no invocations", nil, license.PlanPro},
+	{"stale-synthetics-canary", "Synthetics canaries failing every run", nil, license.PlanPro},
+	{"idle-sagemaker-notebook", "SageMaker notebook instances to review", nil, license.PlanPro},
+	{"idle-kendra-index", "Kendra indexes with no queries", nil, license.PlanPro},
+	{"idle-glue-session", "Glue interactive sessions and development endpoints left READY", nil, license.PlanPro},
+	{"opensearch-oversized", "OpenSearch data nodes with room to downsize", nil, license.PlanPro},
+	{"idle-emr-serverless-app", "EMR Serverless applications paying for warm workers with no job runs", nil, license.PlanPro},
+	{"idle-neptune-graph", "Neptune Analytics graphs with no queries", nil, license.PlanPro},
+	{"keyspaces-provisioned-unused", "Keyspaces tables with underused provisioned throughput", nil, license.PlanPro},
+	{"redshift-oversized", "Provisioned Redshift clusters with room to downsize", nil, license.PlanPro},
 	{"idle-redshift", "Redshift clusters nobody connects to", nil, license.PlanPro},
 	{"idle-tgw-attachment", "Transit Gateway attachments with no traffic", nil, license.PlanPro},
 	{"idle-elasticache", "ElastiCache clusters nobody reads or writes", nil, license.PlanPro},
@@ -204,6 +226,7 @@ var All = []Check{
 	{"public-ipv4-in-use", "Public IPv4 on resources that may not need it", nil, license.PlanPro},
 	{"idle-endpoint", "Interface and Gateway Load Balancer endpoints with no traffic", nil, license.PlanPro},
 	{"cost-hub", "AWS Cost Optimization Hub: rightsize, idle, Graviton", nil, license.PlanPro},
+	{"compute-optimizer", "AWS Compute Optimizer rightsizing (when the hub is off)", nil, license.PlanPro},
 	{"commitments", "Savings Plans and Reserved Instances to buy", nil, license.PlanTeam},
 	{"commitments-expiring", "Reserved Instances and Savings Plans about to end", nil, license.PlanTeam},
 	{"off-hours", "Databases idle at the same hours every week", nil, license.PlanTeam},
@@ -219,15 +242,15 @@ func (c Check) Included(plan string) bool {
 	return license.Rank(plan) >= license.Rank(c.Plan)
 }
 
-// NotIncluded lists the checks a plan doesn't run, for the upgrade note.
-func NotIncluded(plan string) []Check {
-	var out []Check
+// Count is how many checks All lists at exactly that plan (Free, Pro or Team).
+func Count(plan string) int {
+	n := 0
 	for _, c := range All {
-		if !c.Included(plan) {
-			out = append(out, c)
+		if c.Plan == plan {
+			n++
 		}
 	}
-	return out
+	return n
 }
 
 // Title returns a check's human title.
@@ -680,24 +703,31 @@ func orDash(s string) string {
 func LogRetention(r *inventory.Region, o Options) []Finding {
 	var out []Finding
 	var smallN int
-	var smallGiB float64
+	var smallGiB, smallUSD float64
 	for _, g := range r.LogGroups {
 		if g.RetentionInDays != nil {
 			continue
 		}
 		gib := float64(aws.ToInt64(g.StoredBytes)) / (1 << 30)
 		name := aws.ToString(g.LogGroupName)
+		rate, assumedStandard := pricing.LogsStoredRate(string(g.LogGroupClass), pb(r).LogsStorageGB)
 		if gib < o.MinLogGiB {
 			smallN++
 			smallGiB += gib
+			smallUSD += gib * rate
 			continue
+		}
+		detail := fmt.Sprintf("%.1f GiB stored, never expires; a retention policy deletes data older than the days you pick", gib)
+		if assumedStandard {
+			detail += fmt.Sprintf("; priced at the Standard storage rate ($%.3f/GB-month); Infrequent Access is $%.3f and Archive Instant Access is $%.3f when AWS reports those tiers",
+				rate, pricing.LogsStoredIAGBMonth, pricing.LogsStoredArchiveInstantGBMonth)
 		}
 		f := Finding{
 			Check:      "log-retention",
 			Region:     r.Name,
 			Resource:   name,
-			Detail:     fmt.Sprintf("%.1f GiB stored, never expires; a retention policy deletes data older than the days you pick", gib),
-			MonthlyUSD: gib * pb(r).LogsStorageGB,
+			Detail:     detail,
+			MonthlyUSD: gib * rate,
 			Priced:     true,
 			Fix:        []string{fmt.Sprintf("aws logs put-retention-policy --region %s --log-group-name '%s' --retention-in-days 30", r.Name, name)},
 			Facts:      facts("log_group", name, "days", "30"),
@@ -722,8 +752,8 @@ func LogRetention(r *inventory.Region, o Options) []Finding {
 			Region:     r.Name,
 			Resource:   fmt.Sprintf("%d smaller log group(s)", smallN),
 			Key:        "small-never-expiring-log-groups",
-			Detail:     fmt.Sprintf("%.2f GiB stored in total, never expire; cheap today, but they keep growing", smallGiB),
-			MonthlyUSD: smallGiB * pb(r).LogsStorageGB,
+			Detail:     fmt.Sprintf("%.2f GiB stored in total, never expire; cheap today, but they keep growing; priced at each group's storage class (Standard when the class isn't reported)", smallGiB),
+			MonthlyUSD: smallUSD,
 			Priced:     true,
 		})
 	}

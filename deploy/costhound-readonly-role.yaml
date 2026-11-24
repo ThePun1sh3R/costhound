@@ -17,7 +17,7 @@
 # statement only works through EC2's AMI reference check (aws:CalledVia
 # ec2-images.amazonaws.com): EC2 looks at launch templates, SSM parameters and
 # Image Builder recipes for us, and costhound can't call those reads itself.
-# The action list is the same as iam-policy.json (a test keeps them in sync).
+# The actions match iam-policy.json plus iam-policy-pro-services.json (a test keeps them in sync).
 AWSTemplateFormatVersion: "2010-09-09"
 Description: Read-only role for the costhound AWS waste scanner
 Parameters:
@@ -88,12 +88,21 @@ Resources:
                   - ecr:GetLifecyclePolicy
                   - lambda:ListFunctions
                   - s3:ListAllMyBuckets
+                  - s3:GetBucketLocation
                   - s3:GetLifecycleConfiguration
+                  - s3:GetIntelligentTieringConfiguration
                   - s3:GetBucketVersioning
                   - s3:GetBucketObjectLockConfiguration
                   - elasticache:DescribeCacheClusters
                   - dynamodb:ListTables
                   - dynamodb:DescribeTable
+                  - emr-serverless:ListApplications
+                  - emr-serverless:GetApplication
+                  - emr-serverless:ListJobRuns
+                  - emr-serverless:ListTagsForResource
+                  - neptune-graph:ListGraphs
+                  - neptune-graph:GetGraph
+                  - neptune-graph:ListTagsForResource
                   - application-autoscaling:DescribeScalableTargets
                   - ec2:DescribeFastSnapshotRestores
                   - backup:ListBackupVaults
@@ -140,6 +149,14 @@ Resources:
                   - rds:DescribeDBEngineVersions
                   - rds:DescribeBlueGreenDeployments
                   - cost-optimization-hub:ListRecommendations
+                  - compute-optimizer:GetEnrollmentStatus
+                  - compute-optimizer:GetEC2InstanceRecommendations
+                  - compute-optimizer:GetAutoScalingGroupRecommendations
+                  - compute-optimizer:GetEBSVolumeRecommendations
+                  - compute-optimizer:GetLambdaFunctionRecommendations
+                  - compute-optimizer:GetRDSDatabaseRecommendations
+                  - compute-optimizer:GetECSServiceRecommendations
+                  - compute-optimizer:GetIdleRecommendations
                   - organizations:ListAccounts
                   - pricing:GetProducts
                   - dms:DescribeReplicationInstances
@@ -149,7 +166,24 @@ Resources:
                   - transfer:DescribeServer
                   - transfer:ListServers
                   - transfer:ListUsers
+                  - appstream:DescribeFleets
+                  - osis:ListPipelines
+                  - lightsail:GetInstances
+                  - lightsail:GetStaticIps
+                  - lightsail:GetDisks
+                  - lightsail:GetLoadBalancers
+                  - lightsail:GetBundles
+                  - mq:ListBrokers
+                  - shield:DescribeSubscription
+                  - shield:ListProtections
+                  - cloudfront:ListDistributions
                   - route53resolver:ListResolverEndpoints
+                  - directconnect:DescribeConnections
+                  - apprunner:ListServices
+                  - apprunner:DescribeService
+                  - apprunner:DescribeAutoScalingConfiguration
+                  - docdb-elastic:ListClusters
+                  - docdb-elastic:GetCluster
                   - fsx:DescribeFileSystems
                   - fsx:DescribeVolumes
                   - fsx:DescribeDataRepositoryAssociations
@@ -165,7 +199,17 @@ Resources:
                   - sagemaker:ListEndpoints
                   - sagemaker:DescribeEndpoint
                   - sagemaker:DescribeEndpointConfig
+                  - bedrock:ListProvisionedModelThroughputs
+                  - synthetics:DescribeCanaries
+                  - sagemaker:ListNotebookInstances
+                  - sagemaker:DescribeNotebookInstance
+                  - kendra:ListIndices
+                  - kendra:DescribeIndex
+                  - glue:ListSessions
+                  - glue:GetSession
+                  - glue:GetDevEndpoints
                   - redshift:DescribeClusters
+                  - redshift:DescribeNodeConfigurationOptions
                   - ec2:DescribeTransitGatewayAttachments
                   - kafka:ListClusters
                   - kafka:ListNodes
@@ -186,10 +230,20 @@ Resources:
                   - lambda:ListEventSourceMappings
                   - lambda:ListProvisionedConcurrencyConfigs
                   - lambda:GetProvisionedConcurrencyConfig
+                  # ECS service traffic and Fargate sizing.
                   - ecs:ListClusters
                   - ecs:ListServices
                   - ecs:DescribeServices
                   - ecs:DescribeTaskDefinition
+              # Keyspaces authorizes metadata listings on its system keyspaces.
+              - Effect: Allow
+                Action:
+                  - cassandra:Select
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cassandra:*:${AWS::AccountId}:/keyspace/system/*"
+                  - !Sub "arn:${AWS::Partition}:cassandra:*:${AWS::AccountId}:/keyspace/system_schema/*"
+                  - !Sub "arn:${AWS::Partition}:cassandra:*:${AWS::AccountId}:/keyspace/system_schema_mcs/*"
+                  - !Sub "arn:${AWS::Partition}:cassandra:*:${AWS::AccountId}:/keyspace/system_multiregion_info/*"
               # API Gateway's one read action, on REST APIs and stages only: on /apikeys it can return key values.
               - Effect: Allow
                 Resource:

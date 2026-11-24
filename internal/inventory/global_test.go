@@ -31,6 +31,7 @@ func (f *fakeRoute53) ListHealthChecks(context.Context, *route53.ListHealthCheck
 	linked.LinkedService = &r53types.LinkedService{ServicePrincipal: aws.String("servicediscovery.amazonaws.com")}
 	return &route53.ListHealthChecksOutput{HealthChecks: []r53types.HealthCheck{
 		hc("hc-a", r53types.HealthCheckTypeHttps, r53types.HealthCheckConfig{FullyQualifiedDomainName: aws.String("api.example.com"), RequestInterval: aws.Int32(10)}),
+		hc("hc-aws", r53types.HealthCheckTypeHttp, r53types.HealthCheckConfig{FullyQualifiedDomainName: aws.String("my-elb.us-east-1.elb.amazonaws.com")}),
 		hc("hc-b", r53types.HealthCheckTypeHttpsStrMatch, r53types.HealthCheckConfig{IPAddress: aws.String("192.0.2.1"), MeasureLatency: aws.Bool(true)}),
 		hc("hc-calc", r53types.HealthCheckTypeCalculated, r53types.HealthCheckConfig{ChildHealthChecks: []string{"hc-child"}}),
 		hc("hc-child", r53types.HealthCheckTypeHttp, r53types.HealthCheckConfig{Disabled: aws.Bool(true)}),
@@ -120,6 +121,9 @@ func TestLoadGlobalHealthChecks(t *testing.T) {
 	}
 	if h := got["hc-a"]; !h.Used || h.Options != 2 || h.Target != "api.example.com" {
 		t.Errorf("hc-a: named by a record on the second page; HTTPS + fast interval: %+v", h)
+	}
+	if h := got["hc-aws"]; h.Used || h.Target != "my-elb.us-east-1.elb.amazonaws.com" {
+		t.Errorf("hc-aws: Target kept: %+v", h)
 	}
 	if h := got["hc-b"]; h.Used || h.Watched || h.Options != 3 || h.Target != "192.0.2.1" {
 		t.Errorf("hc-b: HTTPS, string matching, latency; an EC2 alarm doesn't count: %+v", h)

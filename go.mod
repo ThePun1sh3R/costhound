@@ -17,6 +17,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cloudtrail v1.65.12
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.76.0
 	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.92.2
+	github.com/aws/aws-sdk-go-v2/service/computeoptimizer v1.62.12
 	github.com/aws/aws-sdk-go-v2/service/costoptimizationhub v1.35.9
 	github.com/aws/aws-sdk-go-v2/service/databasemigrationservice v1.75.9
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.74.1

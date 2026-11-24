@@ -3,12 +3,14 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ThePun1sh3R/costhound/internal/checks"
 	"github.com/ThePun1sh3R/costhound/internal/inventory"
+	"github.com/ThePun1sh3R/costhound/internal/license"
 )
 
 func TestMoney(t *testing.T) {
@@ -64,7 +66,9 @@ func TestText(t *testing.T) {
 		"Not priced, worth a look:", "t2.micro",
 		"Couldn't check", "logs:DescribeLogGroups", "AccessDeniedException", "all regions",
 		"never changes anything",
-		"costhound Pro also checks: NAT gateways with (almost) no traffic;", // titles keep their capitals
+		"Pro adds ",
+		"more checks (usage-based idle resources, AWS Compute Optimizer and Cost Optimization Hub advice, extended-support cliffs, ...): https://costhound.dev",
+		"Team adds Organization-wide reports, Slack and CI gates.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("text report misses %q\n%s", want, out)
@@ -73,10 +77,8 @@ func TestText(t *testing.T) {
 	if strings.Contains(out, "tiny") {
 		t.Error("finding under -min-usd was printed")
 	}
-	// The Team checks aren't Pro's: they get their own line.
-	pro, _, _ := strings.Cut(out[strings.Index(out, "costhound Pro also checks: "):], "\n")
-	if strings.Contains(pro, "Savings Plans and Reserved Instances to buy") || !strings.Contains(out, "costhound Team adds: Savings Plans and Reserved Instances to buy") {
-		t.Errorf("free upsell: Team checks listed as Pro:\n%s", out)
+	if strings.Contains(out, "NAT gateways with (almost) no traffic") || strings.Contains(out, "Savings Plans and Reserved Instances to buy") {
+		t.Errorf("free upsell still lists check titles:\n%s", out)
 	}
 	// The run's own price note, not the built-in one, when the run set it.
 	r := sample()
@@ -102,6 +104,31 @@ func TestTextEmpty(t *testing.T) {
 	}
 }
 
+// The free upsell's Pro count is the registry's PlanPro total, so a new check
+// can't leave the pitch behind.
+func TestFreeUpsellCountMatchesRegistry(t *testing.T) {
+	var b bytes.Buffer
+	sample().Text(&b, false)
+	out := b.String()
+	want := fmt.Sprintf("Pro adds %d more checks (", checks.Count(license.PlanPro))
+	if !strings.Contains(out, want) {
+		t.Errorf("upsell count drifts from registry (%d):\n%s", checks.Count(license.PlanPro), out)
+	}
+	if checks.Count(license.PlanTeam) == 0 {
+		t.Fatal("registry has no Team checks; Team upsell line is gated on that count")
+	}
+	if !strings.Contains(out, "Team adds Organization-wide reports, Slack and CI gates.") {
+		t.Errorf("free upsell misses Team line:\n%s", out)
+	}
+	r := sample()
+	r.Plan = license.PlanPro
+	b.Reset()
+	r.Text(&b, false)
+	if strings.Contains(b.String(), "Pro adds ") || strings.Contains(b.String(), "Team adds ") {
+		t.Errorf("paid plan still prints the free upsell:\n%s", b.String())
+	}
+}
+
 func TestJSON(t *testing.T) {
 	var b bytes.Buffer
 	if err := sample().JSON(&b); err != nil {
@@ -117,7 +144,7 @@ func TestJSON(t *testing.T) {
 	// Empty lists must be [] not null, so scripts can iterate safely.
 	b.Reset()
 	New("v", "1", time.Now(), nil, nil, nil, 0).JSON(&b)
-	if !strings.Contains(b.String(), `"findings": []`) || !strings.Contains(b.String(), `"skipped": []`) || !strings.Contains(b.String(), `"blocked_regions": []`) {
+	if !strings.Contains(b.String(), `"findings": []`) || !strings.Contains(b.String(), `"skipped": []`) || !strings.Contains(b.String(), `"blocked_regions": []`) || !strings.Contains(b.String(), `"not_offered": []`) {
 		t.Errorf("empty JSON = %s", b.String())
 	}
 }

@@ -36,6 +36,8 @@ github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.76.0 h1:y04O7jqZa6HM0JkoPhSI4
 github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.76.0/go.mod h1:lunO76NgN61cnlgsoB/67nAMsexF0YfXXtF5v4Fnb40=
 github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.92.2 h1:EgZ2zXnUAlPTkSvUicRCR5bBHm5ws9pGidRgmwCRQ9U=
 github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.92.2/go.mod h1:LvyCX/2B66WkJ3qgeD2QGZtQaCInPQxZcFOAenHJz2s=
+github.com/aws/aws-sdk-go-v2/service/computeoptimizer v1.62.12 h1:CnybDid/CL/3QslzwX2VoJ88VjFRZONgqozr67sbRR0=
+github.com/aws/aws-sdk-go-v2/service/computeoptimizer v1.62.12/go.mod h1:8XVusXw218jEnUSL6S1TWtLbfL7XMinmdPBPFvWcVsg=
 github.com/aws/aws-sdk-go-v2/service/costoptimizationhub v1.35.9 h1:5dd9ujs1IQBU7TEX64w1Y8KSEJJje8DcEyRv2AK3joI=
 github.com/aws/aws-sdk-go-v2/service/costoptimizationhub v1.35.9/go.mod h1:sfpyzFFe+ErBuI07tRSLqESgaInbdR/eF+3dR0kHJWo=
 github.com/aws/aws-sdk-go-v2/service/databasemigrationservice v1.75.9 h1:Fs8Rjm6e9OZEWApva8tnqF8FkRnVu+iV8aCaSUuQnYQ=

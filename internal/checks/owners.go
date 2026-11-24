@@ -12,6 +12,13 @@ var tagRefs = map[string]func(f Finding, derived bool) string{
 	"unused-workspace":             byFact("workspaces:workspace/", "workspace"),
 	"idle-transfer-server":         byFact("transfer:server/", "transfer_server"),
 	"idle-resolver-endpoint":       byFact("route53resolver:resolver-endpoint/", "resolver_endpoint"),
+	"idle-dx-connection":           byFact("directconnect:dxcon/", "connection"),
+	"lightsail-waste":              byARN("arn"),
+	"idle-appstream-fleet":         byARN("arn"),
+	"idle-osi-pipeline":            byARN("arn"),
+	"idle-mq":                      byARN("arn"),
+	"idle-apprunner-service":       byARN("arn"),
+	"idle-docdb-elastic":           byARN("arn"),
 	"idle-fsx":                     byARN("arn"),
 	"unattached-ebs":               byKey("ec2:volume/"),
 	"gp2-to-gp3":                   byKey("ec2:volume/"),
@@ -47,7 +54,9 @@ var tagRefs = map[string]func(f Finding, derived bool) string{
 	"lambda-errors":                byARN("arn"),
 	"idle-provisioned-concurrency": byFact("lambda:function:", "function"), // tags are the function's
 	"aurora-serverless-pause":      byFact("rds:cluster:", "cluster"),      // tags are the cluster's
+	"idle-ecs-service":             byARN("arn"),
 	"fargate-oversized":            byARN("arn"),
+	"elasticache-oversized":        byARN("arn"),
 	"fast-snapshot-restore":        byKey("ec2:snapshot/"),
 	"efs-no-mount-targets":         byKey("elasticfilesystem:file-system/"),
 	"idle-efs":                     byKey("elasticfilesystem:file-system/"),
@@ -64,15 +73,18 @@ var tagRefs = map[string]func(f Finding, derived bool) string{
 	"opensearch-extended-support":  byKey("es:domain/"),
 	"idle-opensearch":              byKey("es:domain/"),
 	"idle-sagemaker-endpoint":      byKey("sagemaker:endpoint/"),
+	"opensearch-oversized":         byARN("arn"),
+	"redshift-oversized":           byARN("arn"),
 	"idle-redshift":                byKey("redshift:cluster:"),
 	"idle-tgw-attachment":          byKey("ec2:transit-gateway-attachment/"),
 	"idle-elasticache": func(f Finding, _ bool) string {
 		return cacheRef(f.Facts["cache"], f.Facts["replication_group"] == "true")
 	},
-	"idle-msk":              byARN("cluster_arn"),
-	"idle-client-vpn":       byKey("ec2:client-vpn-endpoint/"),
-	"vpn-tunnels-down":      byKey("ec2:vpn-connection/"),
-	"s3-versions-no-expiry": byKey("s3:"), // a bucket ARN names no type: arn:aws:s3:::<bucket>
+	"idle-msk":               byARN("cluster_arn"),
+	"idle-client-vpn":        byKey("ec2:client-vpn-endpoint/"),
+	"vpn-tunnels-down":       byKey("ec2:vpn-connection/"),
+	"s3-standard-no-tiering": byFact("s3:", "bucket"),
+	"s3-versions-no-expiry":  byKey("s3:"), // a bucket ARN names no type: arn:aws:s3:::<bucket>
 	// Batch 5. A Classic Load Balancer's ARN is loadbalancer/<name>.
 	"idle-rds":              byARN("arn"),
 	"idle-db-cluster":       byARN("arn"),
@@ -115,18 +127,30 @@ var tagRefs = map[string]func(f Finding, derived bool) string{
 		}
 		return ""
 	},
+
+	"idle-bedrock-provisioned-throughput": byARN("arn"),
+	"stale-synthetics-canary":             byARN("arn"),
+	"idle-sagemaker-notebook":             byARN("arn"),
+	"idle-kendra-index":                   byFact("kendra:index/", "index_id"),
+	"idle-glue-session":                   byARN("arn"),
+	"idle-emr-serverless-app":             byARN("arn"),
+	"idle-neptune-graph":                  byARN("arn"),
 }
 
 var noTagRef = map[string]string{
-	"old-snapshots":       "a finding sums up every old snapshot of one disk",
-	"lambda-x86":          "a finding sums up the region's x86 functions",
-	"s3-abort-mpu":        "a finding sums up buckets",
-	"public-ipv4-in-use":  "a finding sums up public IPv4 addresses",
-	"rds-orphan-snapshot": "a finding sums up the snapshots of a deleted database",
-	"backup-orphans":      "its resource is deleted",
-	"custom-metrics":      "a finding is about a metric namespace",
-	"cost-hub":            "Cost Optimization Hub findings come from outside the region scan",
-	"commitments":         "a finding is a purchase, not a resource",
+	"keyspaces-provisioned-unused": "owner tags are unavailable with system-only Keyspaces access",
+	"old-snapshots":                "a finding sums up every old snapshot of one disk",
+	"lambda-x86":                   "a finding sums up the region's x86 functions",
+	"s3-abort-mpu":                 "a finding sums up buckets",
+	"public-ipv4-in-use":           "a finding sums up public IPv4 addresses",
+	"rds-orphan-snapshot":          "a finding sums up the snapshots of a deleted database",
+	"backup-orphans":               "its resource is deleted",
+	"custom-metrics":               "a finding is about a metric namespace",
+	"cost-hub":                     "Cost Optimization Hub findings come from outside the region scan",
+	"compute-optimizer":            "Compute Optimizer findings come from outside the region scan",
+	"commitments":                  "a finding is a purchase, not a resource",
+	"unused-shield-advanced":       "a finding is about the account subscription",
+	"cloudfront-dedicated-ip-ssl":  "a certificate can be shared by multiple distributions",
 	// OpenSearch Serverless isn't known to answer tag:GetResources, so an
 	// empty answer couldn't tell untagged from unknown.
 	"idle-opensearch-serverless": "a finding is a billing pool, and collections' tags aren't read",
@@ -185,7 +209,7 @@ func byARN(fact string) func(Finding, bool) string {
 		if len(p) != 6 || p[0] != "arn" {
 			return ""
 		}
-		return p[2] + ":" + p[5]
+		return p[2] + ":" + strings.TrimPrefix(p[5], "/")
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,24 +12,26 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ThePun1sh3R/costhound/internal/checks"
 )
 
-// The StackSet role must allow exactly what iam-policy.json allows, so an
-// Organization scan never hits a permission the single-account policy has.
+// The StackSet role must match the base and supplemental managed policies.
 func TestRoleTemplateMatchesPolicy(t *testing.T) {
-	var pol struct {
-		Statement []struct{ Action []string }
-	}
-	b, err := os.ReadFile("iam-policy.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(b, &pol); err != nil {
-		t.Fatal(err)
-	}
 	var want []string
-	for _, st := range pol.Statement {
-		want = append(want, st.Action...)
+	for _, name := range []string{"iam-policy.json", "iam-policy-pro-services.json"} {
+		for _, st := range managedPolicy(t, name) {
+			want = append(want, st.Action...)
+		}
+	}
+	for _, action := range []string{
+		"apprunner:ListServices", "apprunner:DescribeService", "apprunner:DescribeAutoScalingConfiguration",
+		"docdb-elastic:ListClusters", "docdb-elastic:GetCluster",
+		"glue:ListSessions", "glue:GetSession", "glue:GetDevEndpoints",
+	} {
+		if !slices.Contains(want, action) {
+			t.Errorf("read-only policy is missing %s", action)
+		}
 	}
 	var got []string
 	for _, st := range roleStatements(t) {
@@ -37,9 +40,20 @@ func TestRoleTemplateMatchesPolicy(t *testing.T) {
 	sort.Strings(want)
 	sort.Strings(got)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("role template actions differ from iam-policy.json:\n got  %v\n want %v", got, want)
+		t.Fatalf("role template actions differ from the managed policies:\n got  %v\n want %v", got, want)
+	}
+	for _, id := range []string{"idle-ecs-service", "idle-emr-serverless-app", "idle-neptune-graph", "keyspaces-provisioned-unused"} {
+		for _, source := range checks.Meta[id].Sources {
+			action := sourceIAMAction(source)
+			if !slices.Contains(want, action) {
+				t.Errorf("%s requires %s in the policy and StackSet", id, action)
+			}
+		}
 	}
 	for _, a := range want {
+		if a == "cassandra:Select" {
+			continue // the shared read action for Keyspaces metadata (TestKeyspacesSelectScope)
+		}
 		if a == "apigateway:GET" {
 			continue // API Gateway's one read action: scoped to REST APIs and stages (TestAPIGatewayReadIsScopedToStages)
 		}
@@ -206,8 +220,13 @@ func TestNoPermissionReturnsUserDataOrParameterValues(t *testing.T) {
 // EC2 returns each Site-to-Site VPN tunnel's pre-shared key from these (the
 // tunnel options and the customer gateway configuration), so no statement
 // may grant them, conditioned or not: the VPN check reads CloudWatch only.
+// Direct Connect DescribeVirtualInterfaces returns BGP auth keys, and
+// DescribeRouterConfiguration returns customerRouterConfig: never grant them.
 func TestNoPermissionReturnsVPNKeys(t *testing.T) {
-	never := map[string]bool{"ec2:DescribeVpnConnections": true, "ec2:GetVpnConnectionDeviceSampleConfiguration": true}
+	never := map[string]bool{
+		"ec2:DescribeVpnConnections": true, "ec2:GetVpnConnectionDeviceSampleConfiguration": true,
+		"directconnect:DescribeVirtualInterfaces": true, "directconnect:DescribeRouterConfiguration": true,
+	}
 	var pol struct{ Statement []struct{ Action []string } }
 	b, err := os.ReadFile("iam-policy.json")
 	if err != nil {
@@ -219,14 +238,14 @@ func TestNoPermissionReturnsVPNKeys(t *testing.T) {
 	for i, st := range pol.Statement {
 		for _, a := range st.Action {
 			if never[a] {
-				t.Errorf("iam-policy.json statement %d grants %s: it returns VPN tunnel keys", i, a)
+				t.Errorf("iam-policy.json statement %d grants %s: it returns secret tunnel or BGP keys", i, a)
 			}
 		}
 	}
 	for i, st := range roleStatements(t) {
 		for _, a := range st.Actions {
 			if never[a] {
-				t.Errorf("role template statement %d grants %s: it returns VPN tunnel keys", i, a)
+				t.Errorf("role template statement %d grants %s: it returns secret tunnel or BGP keys", i, a)
 			}
 		}
 	}
@@ -263,7 +282,7 @@ func iamMatch(pattern, arn string) bool {
 // apigateway:GET is API Gateway's one read action, and on /apikeys it can
 // return API key values: costhound gets it on REST APIs and their stages
 // only, in a statement of its own, in both the policy and the StackSet
-// template. Every other statement stays on Resource "*".
+// template. Keyspaces has its own scoped read statement.
 func TestAPIGatewayReadIsScopedToStages(t *testing.T) {
 	var pol struct {
 		Statement []struct {
@@ -297,8 +316,11 @@ func TestAPIGatewayReadIsScopedToStages(t *testing.T) {
 			get = get || a == "apigateway:GET" || a == "apigateway:*" || a == "*"
 		}
 		if !get {
+			if slices.Contains(actions, "cassandra:Select") {
+				return
+			}
 			if len(resources) != 1 || resources[0] != "*" {
-				t.Errorf("%s: only the API Gateway statement may name resources: %v", where, resources)
+				t.Errorf("%s: unexpected resource scope: %v", where, resources)
 			}
 			return
 		}
@@ -360,7 +382,7 @@ func TestAPIGatewayReadIsScopedToStages(t *testing.T) {
 // identity provider URLs and login banners, and load balancer listeners and
 // rules (an OIDC login action's client secret, which AWS doesn't document
 // returning, and a fixed response's body), Spot Fleet LaunchSpecifications
-// (UserData). API Gateway's stage
+// (UserData), and App Runner service environment variables. API Gateway's stage
 // reads (stage variables) are the other one,
 // left out by resource. costhound drops those fields on arrival; the strict
 // policy keeps the answers from reaching it at all.
@@ -368,30 +390,14 @@ var secretCapableReads = []string{"lambda:ListFunctions", "elasticmapreduce:Desc
 	"lambda:ListEventSourceMappings", "ecs:DescribeServices", "bedrock:GetKnowledgeBase",
 	"dms:DescribeReplicationInstances", "dms:DescribeReplicationTasks", "dms:DescribeReplicationConfigs", "dms:DescribeReplications", "transfer:DescribeServer",
 	"elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeRules",
-	"ec2:DescribeSpotFleetRequests"}
+	"ec2:DescribeSpotFleetRequests", "apprunner:DescribeService", "emr-serverless:GetApplication"}
 
-// iam-policy-strict.json is iam-policy.json without the secret-capable reads:
-// the same statements in the same order, nothing added, and API Gateway left
-// with listing APIs (not their stages).
+// The strict policy combines the base and supplemental policies and removes
+// the secret-capable reads, with the same statement order and API Gateway left
+// with listing APIs (not their stages) and Keyspaces limited to system metadata.
 func TestStrictPolicyLeavesOutSecretCapableReads(t *testing.T) {
-	type stmt struct {
-		Sid       string
-		Action    []string
-		Resource  any
-		Condition any
-	}
-	load := func(name string) []stmt {
-		var p struct{ Statement []stmt }
-		b, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(b, &p); err != nil {
-			t.Fatal(err)
-		}
-		return p.Statement
-	}
-	full, strict := load("iam-policy.json"), load("iam-policy-strict.json")
+	full := append(managedPolicy(t, "iam-policy.json"), managedPolicy(t, "iam-policy-pro-services.json")...)
+	strict := append(managedPolicy(t, "iam-policy-strict.json"), managedPolicy(t, "iam-policy-strict-pro-services.json")...)
 	if len(full) != len(strict) {
 		t.Fatalf("%d statements in the full policy, %d in the strict one", len(full), len(strict))
 	}
@@ -427,7 +433,7 @@ func TestStrictPolicyLeavesOutSecretCapableReads(t *testing.T) {
 	readme, _ := os.ReadFile("README.md")
 	for _, a := range append(secretCapableReads, "apigateway:GetStages") {
 		if !seen[a] && a != "apigateway:GetStages" {
-			t.Errorf("%s isn't in iam-policy.json any more: take it off secretCapableReads", a)
+			t.Errorf("%s isn't in the base or supplemental policy: take it off secretCapableReads", a)
 		}
 		if op := a[strings.Index(a, ":")+1:]; !strings.Contains(string(readme), op) {
 			t.Errorf("README must name %s among the calls that can answer with secrets", op)
@@ -456,9 +462,133 @@ func TestCreatorsPolicyStandsAlone(t *testing.T) {
 	if got := actions("iam-policy-creators.json"); strings.Join(got, ",") != "cloudtrail:LookupEvents" {
 		t.Errorf("iam-policy-creators.json: %v", got)
 	}
-	for _, name := range []string{"iam-policy.json", "iam-policy-strict.json"} {
+	for _, name := range []string{"iam-policy.json", "iam-policy-strict.json", "iam-policy-pro-services.json", "iam-policy-strict-pro-services.json"} {
 		if slices.Contains(actions(name), "cloudtrail:LookupEvents") {
 			t.Errorf("%s must not grant cloudtrail:LookupEvents", name)
 		}
 	}
+}
+
+// Check the strict policy's coverage for the reads that remain permitted.
+func TestWasteActionsInStrictPolicy(t *testing.T) {
+	var actions []string
+	for _, name := range []string{"iam-policy-strict.json", "iam-policy-strict-pro-services.json"} {
+		for _, stmt := range managedPolicy(t, name) {
+			actions = append(actions, stmt.Action...)
+		}
+	}
+	for _, id := range []string{"idle-bedrock-provisioned-throughput", "idle-sagemaker-notebook", "stale-synthetics-canary", "idle-glue-session", "idle-kendra-index", "idle-ecs-service", "s3-standard-no-tiering", "idle-emr-serverless-app", "idle-neptune-graph", "keyspaces-provisioned-unused"} {
+		for _, action := range checks.Meta[id].Sources {
+			if slices.Contains(secretCapableReads, action) {
+				continue
+			}
+			if !slices.Contains(actions, sourceIAMAction(action)) {
+				t.Errorf("%s requires %s in the strict policy", id, action)
+			}
+		}
+	}
+}
+
+// The ledger records individual listing operations. AWS authorizes both
+// through cassandra:Select on system keyspaces.
+func sourceIAMAction(source string) string {
+	switch source {
+	case "cassandra:ListKeyspaces", "cassandra:ListTables":
+		return "cassandra:Select"
+	}
+	return source
+}
+
+type managedStatement struct {
+	Action    []string
+	Resource  any
+	Condition any
+}
+
+func managedPolicy(t *testing.T, name string) []managedStatement {
+	t.Helper()
+	data, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pol struct{ Statement []managedStatement }
+	if err := json.Unmarshal(data, &pol); err != nil {
+		t.Fatal(err)
+	}
+	return pol.Statement
+}
+
+func TestManagedPolicySize(t *testing.T) {
+	// https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+	for _, name := range []string{"iam-policy.json", "iam-policy-pro-services.json", "iam-policy-strict.json", "iam-policy-strict-pro-services.json"} {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, b); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if compact.Len() > 6144 {
+			t.Errorf("%s uses %d of 6144 characters", name, compact.Len())
+		}
+	}
+}
+
+func TestKeyspacesSelectScope(t *testing.T) {
+	var system []string
+	for _, keyspace := range []string{"system", "system_schema", "system_schema_mcs", "system_multiregion_info"} {
+		system = append(system, "arn:*:cassandra:*:*:/keyspace/"+keyspace+"/*")
+	}
+	allowsSelect := func(actions []string) bool {
+		return slices.ContainsFunc(actions, func(action string) bool {
+			return iamMatch(strings.ToLower(action), "cassandra:select")
+		})
+	}
+	check := func(name string, statements []roleStatement, want []string) {
+		t.Helper()
+		n := 0
+		for _, st := range statements {
+			if allowsSelect(st.Actions) {
+				n++
+				if !slices.Equal(st.Actions, []string{"cassandra:Select"}) || !slices.Equal(st.Resources, want) {
+					t.Errorf("%s has unexpected Keyspaces permissions: %+v", name, st)
+				}
+			}
+		}
+		expected := 0
+		if len(want) > 0 {
+			expected = 1
+		}
+		if n != expected {
+			t.Errorf("%s has %d Keyspaces statements, want %d", name, n, expected)
+		}
+	}
+	for _, name := range []string{"iam-policy.json", "iam-policy-strict.json", "iam-policy-pro-services.json", "iam-policy-strict-pro-services.json"} {
+		var statements []roleStatement
+		for _, st := range managedPolicy(t, name) {
+			if !allowsSelect(st.Action) {
+				continue
+			}
+			var resources []string
+			if list, ok := st.Resource.([]any); ok {
+				for _, item := range list {
+					resource, _ := item.(string)
+					resources = append(resources, resource)
+				}
+			}
+			statements = append(statements, roleStatement{Actions: st.Action, Resources: resources})
+		}
+		var want []string
+		if strings.HasSuffix(name, "-pro-services.json") {
+			want = system
+		}
+		check(name, statements, want)
+	}
+	scoped := slices.Clone(system)
+	for i, arn := range scoped {
+		arn = strings.Replace(arn, "arn:*:", "arn:${AWS::Partition}:", 1)
+		scoped[i] = strings.Replace(arn, ":cassandra:*:*:", ":cassandra:*:${AWS::AccountId}:", 1)
+	}
+	check("StackSet", roleStatements(t), scoped)
 }

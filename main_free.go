@@ -92,11 +92,14 @@ func youngZonesOut(_ context.Context, _ aws.Config, _ checks.Options, _ *invento
 func globalIndexes(fs []checks.Finding, _ []string) ([]checks.Finding, []string) { return fs, nil }
 
 // loadPaid: source builds read no usage, prices or commitments.
+func recordOpenSearchDataNodes(*inventory.Region, map[string]inventory.NodeGroup) {}
+func recordRedshiftClusters(*inventory.Region, map[string]inventory.Warehouse)    {}
+
 func loadPaid(context.Context, aws.Config, *inventory.Region, checks.Options, string, *pricing.Client) {
 }
 
 // paidAccount: source builds have no account-wide paid findings.
-func paidAccount(_ context.Context, _ aws.Config, _ settings, _ string, findings []checks.Finding, cliffs []checks.Cliff, skipped []inventory.Skip) ([]checks.Finding, []checks.Cliff, []inventory.Skip, []string) {
+func paidAccount(_ context.Context, _ aws.Config, _ settings, _ string, _ []string, findings []checks.Finding, cliffs []checks.Cliff, skipped []inventory.Skip, _ map[string]map[string]string) ([]checks.Finding, []checks.Cliff, []inventory.Skip, []string) {
 	return findings, cliffs, skipped, nil
 }
 
@@ -107,3 +110,10 @@ type orgPlans struct{}
 type orgHub struct{}
 
 func (*orgHub) ok() bool { return false }
+
+func loadGlobalShield(context.Context, aws.Config, *inventory.Region, checks.Options)     {}
+func loadGlobalCloudFront(context.Context, aws.Config, *inventory.Region, checks.Options) {}
+
+func serviceOwnerTags(context.Context, aws.Config, *inventory.Region, []checks.Finding) map[string]map[string]string {
+	return nil
+}

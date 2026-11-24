@@ -287,7 +287,7 @@ func tailUsage() inventory.Tail {
 		LambdaDurationSum: map[string]float64{"worker": 1.5e9}, LambdaDurationMax: map[string]float64{"worker": 30000},
 		LambdaPCInvocations: map[string]float64{"worker": 0}, LambdaAsync: map[string]float64{"worker": 0}, LambdaRecentErrors: map[string]float64{"worker": 3e4},
 		ECSServices: []inventory.ECSService{{ARN: "arn:aws:ecs:eu-west-1:123456789012:service/prod/web", Name: "web", Cluster: "prod", Status: "ACTIVE", LaunchType: "FARGATE",
-			Desired: 4, Running: 4, TaskDef: "arn:aws:ecs:eu-west-1:123456789012:task-definition/web:3", Deployments: 1, PrimarySince: ago(60), Controller: "ECS"}},
+			Desired: 4, Running: 4, TaskDef: "arn:aws:ecs:eu-west-1:123456789012:task-definition/web:3", Deployments: 1, PrimarySince: ago(60), Controller: "ECS", Created: ago(61)}},
 		ECSTaskSizes: map[string]inventory.ECSTaskSize{"arn:aws:ecs:eu-west-1:123456789012:task-definition/web:3": {CPU: 2048, MemMiB: 8192, Fargate: true}},
 		ECSCPUMax:    map[string]float64{"arn:aws:ecs:eu-west-1:123456789012:service/prod/web": 20},
 		ECSMemMax:    map[string]float64{"arn:aws:ecs:eu-west-1:123456789012:service/prod/web": 30},

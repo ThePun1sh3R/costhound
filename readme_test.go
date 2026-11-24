@@ -2,11 +2,13 @@ package main
 
 import (
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/ThePun1sh3R/costhound/internal/checks"
+	"github.com/ThePun1sh3R/costhound/internal/license"
 )
 
 // Every check and every flag must be documented in the README, so the page
@@ -32,20 +34,30 @@ func TestReadmeListsEveryCheckAndFlag(t *testing.T) {
 	}
 }
 
-// The plan table's free count is the real one: it was left at 34 when two
-// free checks arrived.
-func TestReadmeFreeCheckCount(t *testing.T) {
+// readmeChecksRow pulls Free, Pro (+N) and Team (+M) counts from the plans table.
+var readmeChecksRow = regexp.MustCompile(`(?m)^\| Checks \| (\d+) classic waste checks \| \+ (\d+) checks:.*\| \+ (\d+) checks:`)
+
+// The plan table counts the checks added by each tier.
+func TestReadmeCheckCounts(t *testing.T) {
 	b, err := os.ReadFile("README.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := 0
+	code := map[string]int{}
 	for _, c := range checks.All {
-		if c.Plan == "free" {
-			n++
-		}
+		code[c.Plan]++
 	}
-	if want := "| Checks | " + strconv.Itoa(n) + " classic waste checks |"; !strings.Contains(string(b), want) {
-		t.Errorf("README's plan table must say %q", want)
+	m := readmeChecksRow.FindStringSubmatch(string(b))
+	if m == nil {
+		t.Fatal("README plan table has no Checks row with Free, Pro and Team counts")
+	}
+	for i, plan := range []string{license.PlanFree, license.PlanPro, license.PlanTeam} {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			t.Fatalf("%s: bad README count %q", plan, m[i+1])
+		}
+		if n != code[plan] {
+			t.Errorf("%s: README has %d, code has %d", plan, n, code[plan])
+		}
 	}
 }

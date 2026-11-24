@@ -513,7 +513,7 @@ func EFSNoMountTargets(r *inventory.Region, o Options) []Finding {
 		if f.MountTargets > 0 {
 			continue
 		}
-		cost := pricing.EFSMonthly(f.Standard, f.IA, f.Archive, provisionedMiBps(f))
+		cost := efsMonthly(f)
 		if cost < 0.5 {
 			continue
 		}
@@ -527,6 +527,10 @@ func provisionedMiBps(f inventory.FileSystem) float64 {
 		return f.ProvisionedMiBps
 	}
 	return 0
+}
+
+func efsMonthly(f inventory.FileSystem) float64 {
+	return pricing.EFSMonthly(f.Standard, f.IA, f.Archive, provisionedMiBps(f), f.AvailabilityZoneName != "", f.ThroughputMode)
 }
 
 func efsFinding(check, region string, f inventory.FileSystem, cost float64, why string) Finding {

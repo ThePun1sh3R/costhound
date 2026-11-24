@@ -42,7 +42,7 @@ func keyOf(f checks.Finding) string {
 // movedKey is how a finding of a check in checks.TookOver (either side) is
 // matched to the other side across runs: by the older check's name and the
 // resource. A check in checks.Families is matched by its family and the
-// resource's ID. "" for every other check.
+// resource's ID. Findings with migrated keys use their stable resource identity.
 func movedKey(f checks.Finding) string {
 	if fam, ok := checks.Families[f.Check]; ok {
 		id, _, _ := strings.Cut(keyOf(f), " ") // "vol-… (Name)": the ID, whatever the Name tag says now
@@ -56,6 +56,11 @@ func movedKey(f checks.Finding) string {
 	if f.Check == "cost-hub" && strings.HasSuffix(f.Facts["resource_type"], "Storage") {
 		return "hub-storage|" + f.Account + "|" + f.Region + "|" + f.Resource
 	}
+	// Older Compute Optimizer reports keyed by short name already stored the
+	// ARN and type. Match that identity across the change to ARN-based IDs.
+	if k := computeOptimizerKey(f); k != "" {
+		return "moved|compute-optimizer|" + f.Account + "|" + f.Region + "|" + k
+	}
 	old, ok := checks.TookOver[f.Check]
 	if !ok {
 		for _, o := range checks.TookOver {
@@ -68,6 +73,13 @@ func movedKey(f checks.Finding) string {
 		return ""
 	}
 	return "moved|" + old + "|" + f.Account + "|" + f.Region + "|" + keyOf(f)
+}
+
+func computeOptimizerKey(f checks.Finding) string {
+	if f.Check != "compute-optimizer" || f.Facts["resource_type"] == "" || f.Facts["arn"] == "" {
+		return ""
+	}
+	return f.Facts["resource_type"] + "|" + f.Facts["arn"]
 }
 
 // CliffMove is a cost cliff that moved to another date since the last run.

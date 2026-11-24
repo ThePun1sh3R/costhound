@@ -213,7 +213,7 @@ func fixture() *inventory.Region {
 			{Name: "orders", Mode: "PROVISIONED", Shards: 2, Created: ago(300)},
 		},
 		Buckets: []inventory.Bucket{
-			{Name: "bare", Region: "eu-west-1"},
+			{Name: "bare", Region: "eu-west-1", LifecycleRead: true},
 			{Name: "has-rules", Region: "eu-west-1", HasLifecycle: true},
 			{Name: "clean", Region: "eu-west-1", HasLifecycle: true, AbortsMPU: true},
 		},
@@ -245,18 +245,21 @@ func fixture() *inventory.Region {
 		}(),
 		// What the paid plans load from CloudWatch and EKS.
 		Usage: &inventory.Usage{
-			Days:                14,
-			NatBytes:            map[string]float64{"nat-1": 2 << 20, "nat-2": 50 * float64(gib)},
-			EndpointBytes:       map[string]float64{"vpce-ecr-idle": 0, "vpce-sts-busy": 1e9, "vpce-gwlb-idle": 0},
-			APICacheUse:         map[string]float64{"api1/unused": 0, "api1/quiet": 0, "api1/nocalls": 0, "api1/busy": 40, "api2/shared": 0, "api1/new": 0},
-			APIRequests:         map[string]float64{"api1/quiet": 5000, "api1/busy": 9000},
-			EFSConnections:      map[string]float64{"fs-quiet": 0, "fs-busy": 900},
-			StreamRecords:       map[string]float64{"clicks": 0, "audit": 0, "orders": 5e6},
-			TableActivity:       map[string]float64{"orders": 1e6, "abandoned": 0, "scaled": 0, "tiny": 3},
-			CustomMetrics:       map[string]int{"ContainerInsights": 12000, "CWAgent": 800, "MyApp": 40},
-			CacheExtendedPrices: map[string]inventory.ExtendedPrice{"cache.m5.large": {Year12: 0.138, Year3: 0.275}, "cache.r6g.large": {Year12: 0.166, Year3: 0.331}},
-			LBTraffic:           map[string]float64{"arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-quiet/0f1e2d3c4b5a6978": 0, "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-new-quiet/0f1e2d3c4b5a6978": 0, "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/net/lb-busy/0f1e2d3c4b5a6978": 1e6, "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-idle/0f1e2d3c4b5a6978": 0},
-			LogIngest:           map[string]float64{"/big": 200 * float64(gib), "/kept": float64(gib), "/ia": 500 * float64(gib)},
+			Days:                  14,
+			NatBytes:              map[string]float64{"nat-1": 2 << 20, "nat-2": 50 * float64(gib)},
+			EndpointBytes:         map[string]float64{"vpce-ecr-idle": 0, "vpce-sts-busy": 1e9, "vpce-gwlb-idle": 0},
+			APICacheUse:           map[string]float64{"api1/unused": 0, "api1/quiet": 0, "api1/nocalls": 0, "api1/busy": 40, "api2/shared": 0, "api1/new": 0},
+			APIRequests:           map[string]float64{"api1/quiet": 5000, "api1/busy": 9000},
+			EFSConnections:        map[string]float64{"fs-quiet": 0, "fs-busy": 900},
+			StreamRecords:         map[string]float64{"clicks": 0, "audit": 0, "orders": 5e6},
+			TableActivity:         map[string]float64{"orders": 1e6, "abandoned": 0, "scaled": 0, "tiny": 3},
+			CustomMetrics:         map[string]int{"ContainerInsights": 12000, "CWAgent": 800, "MyApp": 40},
+			CacheExtendedPrices:   map[string]inventory.ExtendedPrice{"cache.m5.large": {Year12: 0.138, Year3: 0.275}, "cache.r6g.large": {Year12: 0.166, Year3: 0.331}},
+			LBTraffic:             map[string]float64{"arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-quiet/0f1e2d3c4b5a6978": 0, "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-new-quiet/0f1e2d3c4b5a6978": 0, "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/net/lb-busy/0f1e2d3c4b5a6978": 1e6, "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/lb-idle/0f1e2d3c4b5a6978": 0},
+			LogIngest:             map[string]float64{"/big": 200 * float64(gib), "/kept": float64(gib), "/ia": 500 * float64(gib)},
+			S3Standard:            map[string]inventory.S3StandardUsage{"bare": {Bytes: 1 << 40, MonthlyUSD: 24.58}},
+			S3StandardPriceSource: "eu-west-1 AWS Price List rates",
+
 			PublicENIs: []ec2types.NetworkInterface{
 				eni("eni-a", "amazon", "i-a", "subnet-1", "", ""),
 				eni("eni-b", "amazon", "i-b", "subnet-1", "", ""),
@@ -281,6 +284,11 @@ func fixture() *inventory.Region {
 				{ID: "r3", Region: "eu-west-1", ResourceID: "i-a", ResourceType: "Ec2Instance", Action: "Stop", MonthlySavings: 30},       // also listed by public-ipv4? no: kept
 				{ID: "r4", Region: "Global", ResourceType: "ComputeSavingsPlans", Action: "PurchaseSavingsPlans", Recommended: "Compute Savings Plan, 1 year, $0.50/h", MonthlySavings: 200},
 				{ID: "r5", Region: "eu-west-1", ResourceID: "fn-1", ResourceType: "LambdaFunction", Action: "Rightsize", MonthlySavings: 0},
+			}},
+			ComputeOptimizer: &inventory.ComputeOptimizer{Enrolled: true, Recs: []inventory.ComputeOptimizerRec{
+				{Kind: "Ec2Instance", Region: "eu-west-1", ResourceID: "i-co", ResourceARN: "arn:aws:ec2:eu-west-1:123456789012:instance/i-co",
+					Current: "m5.2xlarge", Recommended: "m5.large", Finding: "Overprovisioned", FindingReasons: "CPUOverprovisioned",
+					LookbackDays: 14, MonthlySavings: 55, PerformanceRisk: 0.5},
 			}},
 			Clusters: []inventory.EKSCluster{
 				{Name: "old", Version: "1.29", VersionStatus: "extended-support", EndOfStandard: ago(100)},
@@ -308,8 +316,24 @@ func fixture() *inventory.Region {
 		ConnectionChecked: now, LastSignIn: now.AddDate(0, 0, -40),
 	}}}
 	addMigrationUsageFixture(r)
+	addMQFixture(r)
+	addAIUsageFixture(r)
+	addGlueFixture(r)
+	addIdleServicesFixture(r)
+	addShieldFixture(r)
+	addCloudFrontSSLFixture(r)
+	addAppStreamFixture(r)
+	addOSIFixture(r)
+	addOpenSearchSizingFixture(r)
+	addRedshiftSizingFixture(r)
 	addFSxUsageFixture(r)
+	addDXUsageFixture(r)
+	addLightsailUsageFixture(r)
 	addDBClusterUsageFixture(r)
+	addECSIdleFixture(r)
+	addCanaryFixture(r)
+	addRightsizeFixture(r)
+	addServiceUsageFixture(r)
 	return r
 }
 
@@ -463,11 +487,29 @@ func TestLogRetention(t *testing.T) {
 	}
 	wantUSD(t, got["/big"], 10*0.03)
 	wantUSD(t, got["2 smaller log group(s)"], 0.75*0.03)
+	if !strings.Contains(got["/big"].Detail, "priced at the Standard storage rate") {
+		t.Errorf("/big has no class: Detail should note Standard pricing: %q", got["/big"].Detail)
+	}
 	if _, ok := got["/kept"]; ok {
 		t.Error("log group with retention reported")
 	}
 	if fix := got["/big"].Fix[0]; fix != "aws logs put-retention-policy --region eu-west-1 --log-group-name '/big' --retention-in-days 30" {
 		t.Errorf("fix = %q", fix)
+	}
+}
+
+func TestLogRetentionByClass(t *testing.T) {
+	r := &inventory.Region{Name: "us-east-1", LogGroups: []logstypes.LogGroup{
+		{LogGroupName: aws.String("/ia-keep"), StoredBytes: aws.Int64(20 * gib), LogGroupClass: logstypes.LogGroupClassInfrequentAccess},
+		{LogGroupName: aws.String("/archive"), StoredBytes: aws.Int64(10 * gib), LogGroupClass: "ARCHIVE_INSTANT_ACCESS"},
+		{LogGroupName: aws.String("/std"), StoredBytes: aws.Int64(5 * gib), LogGroupClass: logstypes.LogGroupClassStandard},
+	}}
+	got := byResource(LogRetention(r, opts()))
+	wantUSD(t, got["/ia-keep"], 20*0.018)
+	wantUSD(t, got["/archive"], 10*0.006)
+	wantUSD(t, got["/std"], 5*0.03)
+	if strings.Contains(got["/std"].Detail, "priced at the Standard storage rate") {
+		t.Errorf("known Standard class must not claim the class was missing: %q", got["/std"].Detail)
 	}
 }
 
@@ -499,6 +541,25 @@ func TestOldInstanceTypes(t *testing.T) {
 	}
 }
 
+var addLightsailUsageFixture = func(*inventory.Region) {}
+var addAIUsageFixture = func(*inventory.Region) {}
+var addGlueFixture = func(*inventory.Region) {}
+var addMQFixture = func(*inventory.Region) {}
+var addIdleServicesFixture = func(*inventory.Region) {}
+var addShieldFixture = func(*inventory.Region) {}
+var addCloudFrontSSLFixture = func(*inventory.Region) {}
+
+var addAppStreamFixture = func(*inventory.Region) {}
+var addOSIFixture = func(*inventory.Region) {}
+var addCanaryFixture = func(*inventory.Region) {}
+var addECSIdleFixture = func(*inventory.Region) {}
+var addRightsizeFixture = func(*inventory.Region) {}
+
+var addOpenSearchSizingFixture = func(*inventory.Region) {}
+var addServiceUsageFixture = func(*inventory.Region) {}
+
+var addRedshiftSizingFixture = func(*inventory.Region) {}
+
 func TestRunCoversEveryCheck(t *testing.T) {
 	seen := map[string]bool{}
 	for _, f := range Run(fixture(), teamOpts()) {
@@ -529,8 +590,8 @@ func TestPlanGating(t *testing.T) {
 			t.Errorf("free plan ran paid check %s", f.Check)
 		}
 	}
-	if len(NotIncluded(license.PlanFree)) != len(paid) || len(NotIncluded(license.PlanTeam)) != 0 {
-		t.Errorf("NotIncluded: free misses %d, team misses %d", len(NotIncluded(license.PlanFree)), len(NotIncluded(license.PlanTeam)))
+	if got := Count(license.PlanPro) + Count(license.PlanTeam); got != len(paid) {
+		t.Errorf("Count: Pro+Team = %d, paid checks = %d", got, len(paid))
 	}
 	// Without usage data the paid checks stay quiet instead of guessing.
 	r := fixture()

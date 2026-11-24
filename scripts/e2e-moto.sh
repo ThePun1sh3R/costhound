@@ -22,13 +22,21 @@ fi
 # Its DMS model emits ISO dates where AWS JSON 1.1 expects epoch seconds.
 # Backdate only the planted DMS instance so Free can judge it without waiting.
 # Backdate a Private CA tagged e2e-age=old past the 30-day free trial.
+# Backdate only the old SageMaker notebook fixture past the review cutoff.
+# Backdate the running Synthetics fixture and return REST JSON epoch timestamps.
+# Moto does not advance the planted InfluxDB instance beyond CREATING.
 "$VENV/bin/python" - "$PORT" > .e2e/moto.log 2>&1 <<'PYMOTO' &
 import sys
 from datetime import datetime, timedelta, timezone
 
 from moto.acmpca.models import CertificateAuthority, acmpca_backends
 from moto.dms.models import FakeReplicationInstance
+from moto.ecs.models import Service
+from moto.emrserverless.models import Application, EMRServerlessBackend
 from moto.server import main
+from moto.sagemaker.models import FakeSagemakerNotebookInstance
+from moto.synthetics.models import Canary
+from moto.timestreaminfluxdb.models import InstanceStatus, TimestreamInfluxDBBackend
 from moto.transfer.types import Server, ServerState
 
 init_server = Server.__post_init__
@@ -60,6 +68,59 @@ def pca_fixture_json(self):
         response["UsageMode"] = "GENERAL_PURPOSE"  # moto hardcodes SHORT_LIVED_CERTIFICATE; AWS defaults to this
     return response
 CertificateAuthority.to_json = pca_fixture_json
+
+init_notebook = FakeSagemakerNotebookInstance.__init__
+def init_fixture_notebook(self, *args, **kwargs):
+    init_notebook(self, *args, **kwargs)
+    if self.notebook_instance_name == "e2e-old-notebook":
+        self.creation_time -= timedelta(days=40)
+        self.last_modified_time -= timedelta(days=40)
+FakeSagemakerNotebookInstance.__init__ = init_fixture_notebook
+
+canary_dict = Canary.to_dict
+def canary_fixture_dict(self):
+    response = canary_dict(self)
+    if self.name == "e2e-running-canary":
+        old = (datetime.now(timezone.utc) - timedelta(days=40)).timestamp()
+        response["Status"] = {"State": "RUNNING"}
+        response["Timeline"] = {"Created": old, "LastModified": old, "LastStarted": old}
+    return response
+Canary.to_dict = canary_fixture_dict
+
+create_influx = TimestreamInfluxDBBackend.create_db_instance
+def create_fixture_influx(self, *args, **kwargs):
+    instance = create_influx(self, *args, **kwargs)
+    if instance.name == "e2e-no-influx-metrics":
+        instance.status = InstanceStatus.AVAILABLE
+    return instance
+TimestreamInfluxDBBackend.create_db_instance = create_fixture_influx
+
+init_ecs_service = Service.__init__
+def init_fixture_ecs_service(self, *args, **kwargs):
+    init_ecs_service(self, *args, **kwargs)
+    if self.name == "e2e-web":
+        self.created_at = datetime.now(timezone.utc) - timedelta(days=40)
+        self.running_count = 2
+        self.pending_count = 0
+Service.__init__ = init_fixture_ecs_service
+
+init_emr_app = Application.__init__
+def init_fixture_emr_app(self, *args, **kwargs):
+    init_emr_app(self, *args, **kwargs)
+    if self.name == "e2e-emr-serverless-warm":
+        self.created_at -= timedelta(days=40)
+        self.updated_at = self.created_at
+        self.runtime_configuration = [{"classification": "spark-defaults", "properties": {"test.setting": "e2e-emr-serverless-settings-marker"}}]
+Application.__init__ = init_fixture_emr_app
+
+# Moto treats an application with no job_runs entry as missing. AWS lists
+# an empty page for an existing application with no jobs.
+create_emr_app = EMRServerlessBackend.create_application
+def create_fixture_emr_app(self, *args, **kwargs):
+    app = create_emr_app(self, *args, **kwargs)
+    self.job_runs.setdefault(app.id, [])
+    return app
+EMRServerlessBackend.create_application = create_fixture_emr_app
 
 main(["-H", "127.0.0.1", "-p", sys.argv[1]])
 PYMOTO
@@ -127,15 +188,18 @@ aws apigateway update-stage --rest-api-id "$APIID" --stage-name warm --patch-ope
 # its Kerberos settings: the paid scans read it and must keep none of them.
 # An ECS Fargate service; its task definition holds a secret in a container's
 # environment, which costhound must never keep (moto needs securityGroups).
-ECSVPC=$(q ec2 create-vpc --cidr-block 10.42.0.0/16 --query Vpc.VpcId)
-ECSSUB=$(q ec2 create-subnet --vpc-id "$ECSVPC" --cidr-block 10.42.1.0/24 --availability-zone ${R}a --query Subnet.SubnetId)
-ECSSG=$(q ec2 create-security-group --group-name e2e-ecs --description e2e --vpc-id "$ECSVPC" --query GroupId)
+ECSSG=$(q ec2 create-security-group --group-name e2e-ecs --description e2e --vpc-id "$VPC" --query GroupId)
+ECSTG=$(q elbv2 create-target-group --name e2e-ecs --protocol HTTP --port 8080 --target-type ip --vpc-id "$VPC" --query 'TargetGroups[0].TargetGroupArn')
+aws elbv2 create-listener --load-balancer-arn "$LB" --protocol HTTP --port 8080 --default-actions Type=forward,TargetGroupArn="$ECSTG" > /dev/null
 aws ecs create-cluster --cluster-name e2e-ecs > /dev/null
 aws ecs register-task-definition --family e2e-web --requires-compatibilities FARGATE --network-mode awsvpc --cpu 1024 --memory 4096 \
   --runtime-platform cpuArchitecture=X86_64,operatingSystemFamily=LINUX \
   --container-definitions '[{"name":"web","image":"nginx","essential":true,"environment":[{"name":"DB_PASSWORD","value":"e2e-ecs-env-secret-value"}]}]' > /dev/null
 aws ecs create-service --cluster e2e-ecs --service-name e2e-web --task-definition e2e-web --desired-count 2 --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[$ECSSUB],securityGroups=[$ECSSG]}" > /dev/null
+  --load-balancers "targetGroupArn=$ECSTG,containerName=web,containerPort=8080" \
+  --network-configuration "awsvpcConfiguration={subnets=[$SUB1],securityGroups=[$ECSSG]}" > /dev/null
+[[ $(q ecs describe-services --cluster e2e-ecs --services e2e-web --query 'services[0].runningCount') == 2 ]]
+[[ $(q ecs describe-services --cluster e2e-ecs --services e2e-web --query 'services[0].createdAt') != None ]]
 aws emr create-cluster --name e2e-emr --release-label emr-7.0.0 --instance-type m5.xlarge --instance-count 1 --applications Name=Spark \
   --configurations '[{"Classification":"hive-site","Properties":{"javax.jdo.option.ConnectionPassword":"e2e-hive-secret-value"}}]' \
   --steps 'Type=CUSTOM_JAR,Name=load,ActionOnFailure=CONTINUE,Jar=command-runner.jar,Args=[echo,e2e-step-secret-value]' \
@@ -196,9 +260,22 @@ aws opensearch create-domain --domain-name e2e-old-search --engine-version Elast
 aws sagemaker create-model --model-name e2e-model --execution-role-arn arn:aws:iam::123456789012:role/e2e-sm --primary-container Image=123456789012.dkr.ecr.$R.amazonaws.com/e2e:latest > /dev/null
 aws sagemaker create-endpoint-config --endpoint-config-name e2e-cfg --production-variants VariantName=AllTraffic,ModelName=e2e-model,InstanceType=ml.m5.large,InitialInstanceCount=1 > /dev/null
 aws sagemaker create-endpoint --endpoint-name e2e-endpoint --endpoint-config-name e2e-cfg > /dev/null
+for notebook in e2e-old-notebook e2e-new-notebook; do
+  aws sagemaker create-notebook-instance --notebook-instance-name "$notebook" --instance-type ml.t3.medium \
+    --role-arn arn:aws:iam::123456789012:role/e2e-sm --volume-size-in-gb 10 > /dev/null
+done
+aws synthetics create-canary --name e2e-running-canary --code S3Bucket=e2e-canary-code,S3Key=fixture.zip,Handler=index.handler \
+  --artifact-s3-location s3://e2e-canary-artifacts --execution-role-arn arn:aws:iam::123456789012:role/e2e-canary \
+  --schedule Expression='rate(5 minutes)' --runtime-version syn-nodejs-puppeteer-11.0 > /dev/null
 aws redshift create-cluster --cluster-identifier e2e-wh --node-type ra3.xlplus --number-of-nodes 2 --master-username e2eadmin --master-user-password E2epassw0rd > /dev/null
 TGW=$(q ec2 create-transit-gateway --query TransitGateway.TransitGatewayId)
 aws ec2 create-transit-gateway-vpc-attachment --transit-gateway-id "$TGW" --vpc-id "$VPC" --subnet-ids "$SUB1" > /dev/null
+# Moto serves the EMR Serverless REST JSON inventory. The CloudWatch gap
+# keeps this old STARTED app with warm workers unresolved.
+aws emr-serverless create-application --name e2e-emr-serverless-warm --release-label emr-7.9.0 --type SPARK \
+  --initial-capacity '{"DRIVER":{"workerCount":1,"workerConfiguration":{"cpu":"2 vCPU","memory":"4 GB","disk":"30 GB"}}}' \
+  --auto-stop-configuration enabled=false > /dev/null
+
 # An EKS cluster with nothing to run on (and one with a node group, which must stay quiet).
 aws eks create-cluster --name e2e-empty-eks --role-arn arn:aws:iam::123456789012:role/e2e-eks --resources-vpc-config subnetIds="$SUB1","$SUB2" > /dev/null
 aws eks create-cluster --name e2e-busy-eks --role-arn arn:aws:iam::123456789012:role/e2e-eks --resources-vpc-config subnetIds="$SUB1","$SUB2" > /dev/null
@@ -214,6 +291,8 @@ DMS=$(q dms create-replication-instance --replication-instance-identifier e2e-dm
 # moto has create/describe file systems (no Lifecycle/CreationTime); it lacks DescribeVolumes and DescribeDataRepositoryAssociations.
 aws fsx create-file-system --file-system-type LUSTRE --storage-capacity 1200 --subnet-ids "$SUB1" \
   --lustre-configuration DeploymentType=SCRATCH_2 > /dev/null
+# moto serves describe_connections; CloudWatch CBOR still blocks the idle finding (proven in unit tests).
+aws directconnect create-connection --location EqDC2 --bandwidth 1Gbps --connection-name e2e-idle-dx > /dev/null || true
 PCA=$(q acm-pca create-certificate-authority --certificate-authority-type ROOT \
   --certificate-authority-configuration 'KeyAlgorithm=RSA_2048,SigningAlgorithm=SHA256WITHRSA,Subject={CommonName=e2e-pca}' \
   --tags Key=e2e-age,Value=old --query CertificateAuthorityArn)
@@ -372,13 +451,20 @@ checks = {f["check"] for f in r["findings"]}
 bad = []
 if r["plan"] != "team":
     bad.append(f"plan is {r['plan']}")
+# Moto does not emit daily S3 storage metrics. Unit tests cover the tiering decision.
+if "s3-standard-no-tiering" in checks:
+    bad.append("S3 tiering needs a daily StandardStorage datapoint")
 if any(f["check"] == "idle-network-firewall" for f in r["findings"]):
     bad.append("idle-network-firewall judged a firewall it can't see the endpoints or metrics of")
 if not any(f["check"] == "opensearch-extended-support" and f["resource"] == "e2e-old-search" for f in r["findings"]):
     bad.append("opensearch-extended-support missed the planted Elasticsearch 7.4 domain")
 # moto can't answer CloudWatch's CBOR protocol (the Go SDK's default since
 # 2025), so usage-based checks are proven by scripts/real-aws-smoke.sh instead.
-known = {"cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "cost-optimization-hub:ListRecommendations", "pricing:GetProducts", "ec2:DescribeFastSnapshotRestores",
+known = {"cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "cost-optimization-hub:ListRecommendations",
+         "compute-optimizer:GetEnrollmentStatus", "compute-optimizer:GetEC2InstanceRecommendations",
+         "compute-optimizer:GetAutoScalingGroupRecommendations", "compute-optimizer:GetEBSVolumeRecommendations",
+         "compute-optimizer:GetLambdaFunctionRecommendations",
+         "pricing:GetProducts", "ec2:DescribeFastSnapshotRestores",
          "ec2:DescribeImageReferences", "eks:DescribeClusterVersions", "eks:ListCapabilities", "ec2:DescribeClientVpnEndpoints",
          "network-firewall:ListFirewalls", "cloudwatch:DescribeAlarms", "route53:ListTrafficPolicyInstances", "ec2:DescribeCapacityReservations",
          "lambda:ListProvisionedConcurrencyConfigs",  # moto: 404
@@ -387,6 +473,8 @@ known = {"cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "cost-optimizatio
          "dms:DescribeReplications",  # no DMS Serverless runtime state
          "transfer:ListUsers",  # Moto can create users but cannot list them
          "kinesis:DescribeAccountSettings",  # moto lacks Kinesis account settings
+         "appstream:DescribeFleets",  # moto has no AppStream backend
+         "lightsail:GetInstances", "lightsail:GetStaticIps", "lightsail:GetDisks", "lightsail:GetLoadBalancers",  # moto has no Lightsail backend
          "fsx:DescribeVolumes",  # moto fsx has create/describe/delete file systems and backups, not volumes
          "fsx:DescribeDataRepositoryAssociations",  # moto fsx has no data repository associations
          "rolesanywhere:ListTrustAnchors",  # moto has no IAM Roles Anywhere
@@ -396,7 +484,15 @@ known = {"cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "cost-optimizatio
          # the Go SDK speaks CBOR to MemoryDB too (since v1.43), which moto can't answer
          "memorydb:DescribeClusters",
          # moto has no Global Accelerator
-         "globalaccelerator:ListAccelerators"}  # the Go SDK speaks CBOR to Network Firewall too, which moto can't answer  # moto has no Cost Optimization Hub, Price List, AMI references or EKS version table and capabilities
+         "globalaccelerator:ListAccelerators",  # the Go SDK speaks CBOR to Network Firewall too, which moto can't answer  # moto has no Cost Optimization Hub, Price List, AMI references or EKS version table and capabilities
+         # Direct Connect: moto has describe_connections; keep as a gap if this build lacks it
+         "directconnect:DescribeConnections",
+         "bedrock:ListProvisionedModelThroughputs",  # moto Bedrock has no Provisioned Throughput
+         "kendra:ListIndices",  # moto has no Kendra backend
+         "glue:ListSessions", "glue:GetSession", "glue:GetDevEndpoints",  # moto Glue has no interactive sessions / GetDevEndpoints path used here
+         "neptune-graph:ListGraphs", "cassandra:ListKeyspaces",  # moto has neither backend
+         # This Moto build has no App Runner or DocumentDB Elastic backend.
+         "apprunner:ListServices", "docdb-elastic:ListClusters"}
 other = [x for x in r["skipped"] if x["what"] not in known]
 if other:
     bad.append(f"unexpected skips: {other}")
@@ -405,8 +501,36 @@ read_ok = {c["operation"] for c in calls if c["outcome"] == "ok"}
 for op in ("ListServers", "DescribeServer", "ListResolverEndpoints", "DescribeReplicationInstances", "DescribeReplicationTasks", "DescribeFileSystems"):
     if op not in read_ok:
         bad.append(f"expected the SDK inventory read {op} to succeed")
+# Prefer a successful DescribeConnections when moto serves it (planted connection above).
+if "DescribeConnections" not in read_ok and not any(x["what"] == "directconnect:DescribeConnections" for x in r["skipped"]):
+    bad.append("expected DescribeConnections to succeed or be skipped as a moto gap")
 if not any(c["operation"] == "ListUsers" for c in calls):
     bad.append("expected a user inventory read for the stopped Transfer server")
+notebooks = [f for f in r["findings"] if f["check"] == "idle-sagemaker-notebook"]
+if (len(notebooks) != 1 or notebooks[0]["resource"] != "e2e-old-notebook"
+        or notebooks[0].get("confidence") != "low"
+        or abs(notebooks[0].get("monthly_usd", 0) - 36.50) > 0.001
+        or "EBS storage costs $1.40/mo" not in notebooks[0].get("detail", "")):
+    bad.append("expected only the old notebook at low confidence, $36.50/mo compute savings and $1.40/mo EBS in detail")
+if "idle-ecs-service" in checks:
+    bad.append("idle-ecs-service judged the running ECS service without readable target group traffic")
+for op in ("ListServices", "DescribeServices", "DescribeTaskDefinition"):
+    if op not in read_ok:
+        bad.append(f"expected the ECS inventory read {op} to succeed")
+if {"idle-bedrock-provisioned-throughput", "idle-kendra-index"} & checks:
+    bad.append("found idle Bedrock or Kendra resources without usage data")
+if {"idle-emr-serverless-app", "idle-neptune-graph", "keyspaces-provisioned-unused"} & checks:
+    bad.append("new service checks judged resources without daily usage data")
+for op in ("ListApplications", "GetApplication", "ListJobRuns"):
+    if op not in read_ok:
+        bad.append(f"expected the EMR Serverless inventory read {op} to succeed")
+if any(b"e2e-emr-serverless-settings-marker" in open(p, "rb").read() for p in (".e2e/report-team.json", ".e2e/report.html", ".e2e/team.err")):
+    bad.append("an EMR Serverless runtime setting leaked into the output")
+for op in ("ListNotebookInstances", "DescribeNotebookInstance", "DescribeCanaries"):
+    if op not in read_ok:
+        bad.append(f"expected the SDK inventory read {op} to succeed")
+if "stale-synthetics-canary" in checks:
+    bad.append("judged Synthetics without full daily CloudWatch data")
 if not os.path.getsize(".e2e/report.html") > 10000:
     bad.append("HTML report missing or tiny")
 tf = next((f for f in r["findings"] if f["check"] == "dynamodb-no-autoscaling" and f["resource"] == "e2e-orders"), {})

@@ -12,6 +12,7 @@ import (
 
 var addMigrationUsageFixture = func(*inventory.Region) {}
 var addFSxUsageFixture = func(*inventory.Region) {}
+var addDXUsageFixture = func(*inventory.Region) {}
 var addDBClusterUsageFixture = func(*inventory.Region) {}
 
 func dmsFixture() (*inventory.Region, inventory.DMSInstance) {

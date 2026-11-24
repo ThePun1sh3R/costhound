@@ -3,6 +3,10 @@
 // from the AWS Price List. They are estimates for ranking waste, not a bill.
 package pricing
 
+import (
+	"strings"
+)
+
 // HoursPerMonth is the hour count AWS uses for monthly estimates.
 const HoursPerMonth = 730.0
 
@@ -19,7 +23,13 @@ const (
 	SnapshotGBMonth        = 0.05
 	SnapshotArchiveGBMonth = 0.0125
 
-	LogsStoredGBMonth = 0.03
+	// CloudWatch Logs stored bytes (AmazonCloudWatch offer 20261119171040,
+	// us-east-1, verified 2026-11-24): TimedStorage-ByteHrs $0.03 Standard;
+	// IA-TimedStorage-ByteHrs $0.018 Infrequent Access log class; Archive
+	// Instant Access $0.006 where AWS reports that tier.
+	LogsStoredGBMonth               = 0.03
+	LogsStoredIAGBMonth             = 0.018
+	LogsStoredArchiveInstantGBMonth = 0.006
 )
 
 // Provisioned performance prices (per unit-month).
@@ -56,12 +66,24 @@ func minf(a, b float64) float64 {
 const (
 	// NAT gateway hourly charge; data processing ($0.045/GB) comes on top.
 	NATGatewayMonthly = 0.045 * HoursPerMonth
-	// CloudWatch Logs ingestion per GB by log class.
+	// CloudWatch Logs custom PutLogEvents ingestion (AmazonCloudWatch offer
+	// 20261119171040, us-east-1, verified 2026-11-24): DataProcessing-Bytes
+	// $0.50/GB flat (Standard); DataProcessingIA-Bytes $0.25/GB.
 	LogsIngestStandardGB = 0.50
 	LogsIngestIAGB       = 0.25
 	// EKS control plane: $0.10/h in standard support, $0.60/h in extended
 	// support, so extended support adds $0.50/h per cluster.
 	EKSExtendedExtraMonthly = 0.50 * HoursPerMonth
+)
+
+// Vended log ingestion to CloudWatch Logs (AmazonCloudWatch offer
+// 20261119171040, us-east-1, verified 2026-11-24): USE1-VendedLog-Bytes
+// tiers per account-month — 0–10 TiB $0.50/GB, 10–30 TiB $0.25, 30–50 TiB
+// $0.10, above $0.05. Custom PutLogEvents stays flat (LogsIngestStandardGB).
+const (
+	VendedLogsTier1GB = 10 * 1024 // 10 TiB
+	VendedLogsTier2GB = 30 * 1024
+	VendedLogsTier3GB = 50 * 1024
 )
 
 // More free-plan prices (us-east-1 list).
@@ -85,18 +107,57 @@ func DynamoDBProvisionedMonthly(rcu, wcu int64) float64 {
 	return (float64(rcu)*DynamoDBRCUHour + float64(wcu)*DynamoDBWCUHour) * HoursPerMonth
 }
 
-// Batch 3 prices, us-east-1, read from the AWS Price List on 2026-11-19.
+// Batch 3 / EFS prices (AmazonEFS offer 20261104213451, us-east-1, verified
+// 2026-11-24). Standard: TimedStorage-ByteHrs $0.30 Regional,
+// TimedStorage-Z-ByteHrs $0.16 One Zone. IA: IATimedStorage-ByteHrs $0.025
+// Regional Bursting/Provisioned, IATimedStorage-ET-ByteHrs $0.016 Regional
+// Elastic, IATimedStorage-Z-ByteHrs $0.0133 One Zone. Archive:
+// ArchiveTimedStorage-ByteHrs $0.008. Provisioned throughput:
+// ProvisionedTP-MiBpsHrs $6.00/(MiB/s)-month.
 const (
-	FastSnapshotRestoreHour = 0.75 // per snapshot per AZ (one DSU)
-	EFSStandardGBMonth      = 0.30
-	EFSIAGBMonth            = 0.025
-	EFSArchiveGBMonth       = 0.008
-	EFSProvisionedMiBpsMon  = 6.00
-	BackupEBSGBMonth        = 0.05 // AWS Backup EBS (warm) storage
+	FastSnapshotRestoreHour   = 0.75 // per snapshot per AZ (one DSU)
+	EFSStandardGBMonth        = 0.30
+	EFSStandardOneZoneGBMonth = 0.16
+	EFSIAGBMonth              = 0.025
+	EFSIAElasticGBMonth       = 0.016
+	EFSIAOneZoneGBMonth       = 0.0133
+	EFSArchiveGBMonth         = 0.008
+	EFSProvisionedMiBpsMon    = 6.00
+	BackupEBSGBMonth          = 0.05 // AWS Backup EBS (warm) storage
 )
 
+// LogsStoredRate is the GB-month rate for a CloudWatch Logs class or storage
+// tier. standardGB is the Standard rate (regional Book or LogsStoredGBMonth).
+// assumedStandard is true when the API did not report a class/tier (only
+// storedBytes): callers should say the estimate uses the Standard rate.
+func LogsStoredRate(class string, standardGB float64) (rate float64, assumedStandard bool) {
+	if standardGB <= 0 {
+		standardGB = LogsStoredGBMonth
+	}
+	switch strings.ToUpper(strings.TrimSpace(class)) {
+	case "INFREQUENT_ACCESS":
+		return LogsStoredIAGBMonth, false
+	case "ARCHIVE_INSTANT_ACCESS":
+		return LogsStoredArchiveInstantGBMonth, false
+	case "STANDARD", "ESSENTIALS", "DELIVERY":
+		return standardGB, false
+	case "":
+		return standardGB, true
+	default:
+		return standardGB, true
+	}
+}
+
 // EFSMonthly prices an EFS file system's storage and provisioned throughput.
-func EFSMonthly(standard, ia, archive int64, provisionedMiBps float64) float64 {
+// oneZone is true when AvailabilityZoneName is set (One Zone file system).
+// throughputMode is bursting, provisioned, or elastic (DescribeFileSystems).
+func EFSMonthly(standard, ia, archive int64, provisionedMiBps float64, oneZone bool, throughputMode string) float64 {
 	gb := func(b int64) float64 { return float64(b) / (1 << 30) }
-	return gb(standard)*EFSStandardGBMonth + gb(ia)*EFSIAGBMonth + gb(archive)*EFSArchiveGBMonth + provisionedMiBps*EFSProvisionedMiBpsMon
+	std, iaRate := EFSStandardGBMonth, EFSIAGBMonth
+	if oneZone {
+		std, iaRate = EFSStandardOneZoneGBMonth, EFSIAOneZoneGBMonth
+	} else if strings.EqualFold(throughputMode, "elastic") {
+		iaRate = EFSIAElasticGBMonth
+	}
+	return gb(standard)*std + gb(ia)*iaRate + gb(archive)*EFSArchiveGBMonth + provisionedMiBps*EFSProvisionedMiBpsMon
 }

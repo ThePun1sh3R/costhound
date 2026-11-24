@@ -30,7 +30,19 @@ import (
 // the checks judge only what is reporting.
 type Tail struct {
 	migrationTail
+	lightsailTail
+	mqTail
+	shieldTail
+	cloudFrontTail
+	appStreamTail
+	osiTail
+	canaryTail
+	serviceUsageTail
 	fsxTail
+	dxTail
+	idleServicesTail
+	ecsIdleTail
+	rightsizeTail                     // elasticache-oversized Pro: Price List ladder, peaks, reservations
 	workspacesTail                    // unused-workspace Pro: CloudWatch age and AmazonWorkSpaces User prices
 	EKSFit         map[string]*EKSFit // EKS cluster -> Container Insights requests and use, hour by hour
 	Domains        []Domain
@@ -149,6 +161,12 @@ type DBClusterMemberUse struct {
 
 // Domain is an OpenSearch Service domain and its node groups.
 type Domain struct {
+	SizingReady        bool // data-node configuration is stable
+	SizingUnjudged     bool // required configuration or sizing metrics were unread
+	SizingTunedEBS     bool // gp3 performance above the baseline
+	SizingTarget       string
+	SizingDays         int
+	SizingHourly       float64
 	Name, ARN, Account string
 	Engine, Version    string // "OpenSearch" or "Elasticsearch", and "2.11"
 	Nodes              []NodeGroup
@@ -178,11 +196,16 @@ type Variant struct {
 
 // Warehouse is a provisioned Redshift cluster.
 type Warehouse struct {
-	ID, NodeType, Status string
-	Nodes                int
-	Created              *time.Time
-	Pausable             bool   // RA3, RG or DC2, in a VPC, no HSM, automated snapshots on: what pause-cluster needs
-	PauseBlock           string // why it can't pause: "ds2", "node-type", "vpc", "hsm" or "snapshots" ("" when it can)
+	ARN                     string
+	SizingReady             bool
+	SizingType              string
+	SizingNodes, SizingDays int
+	SizingHourly            float64
+	ID, NodeType, Status    string
+	Nodes                   int
+	Created                 *time.Time
+	Pausable                bool   // RA3, RG or DC2, in a VPC, no HSM, automated snapshots on: what pause-cluster needs
+	PauseBlock              string // why it can't pause: "ds2", "node-type", "vpc", "hsm" or "snapshots" ("" when it can)
 }
 
 // IndexWindowDays is how far back idle-dynamodb-index reads, whatever
@@ -437,7 +460,7 @@ type PCConfig struct {
 	Min                      int  // that target's MinCapacity; -1: the targets couldn't be read
 }
 
-// ECSAPI is what fargate-oversized reads of ECS.
+// ECSAPI is what the ECS service checks read.
 type ECSAPI interface {
 	ecs.ListClustersAPIClient
 	ecs.ListServicesAPIClient
@@ -445,14 +468,18 @@ type ECSAPI interface {
 	DescribeTaskDefinition(context.Context, *ecs.DescribeTaskDefinitionInput, ...func(*ecs.Options)) (*ecs.DescribeTaskDefinitionOutput, error)
 }
 
-// ECSService is what fargate-oversized keeps of an ECS service: never its
-// events, tags, roles, load balancers or network configuration.
+// ECSService keeps the service fields these checks use. Only target group
+// ARNs are kept from the load balancer configuration. Cloud Map and Service
+// Connect are booleans only (DescribeServices can return a Service Connect
+// log driver's options, which may hold a token).
 type ECSService struct {
 	ARN, Name, Cluster, Status string
 	LaunchType                 string        // "" when it uses a capacity provider strategy
 	Providers                  []ECSProvider // its capacity provider strategy
 	Platform                   string        // platformFamily
 	Desired, Running           int
+	Created                    *time.Time
+	TargetGroups               []string   // empty ARN denotes an unsupported attachment
 	TaskDef                    string     // its task definition's ARN
 	Deployments                int        // how many deployments it has now
 	PrimarySince               *time.Time // when its PRIMARY deployment was created
@@ -460,6 +487,8 @@ type ECSService struct {
 	Rollout                    string     // the PRIMARY deployment's rolloutState (COMPLETED, IN_PROGRESS, FAILED; "" when AWS doesn't say)
 	TaskSets                   bool
 	Scaled                     bool // Application Auto Scaling has a scalable target for it
+	CloudMap                   bool // ServiceRegistries is non-empty (traffic outside target groups)
+	ServiceConnect             bool // a deployment has Service Connect enabled
 }
 
 // ECSProvider is one item of a capacity provider strategy.

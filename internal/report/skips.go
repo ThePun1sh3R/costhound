@@ -19,6 +19,19 @@ type Blocked struct {
 	Calls  []string `json:"calls"`
 }
 
+// NotOffered is a region where some services have no regional endpoint (DNS
+// NXDOMAIN on the service host) while other AWS calls in that region still
+// worked. Those are not permission or network failures: AWS simply doesn't
+// offer the service there.
+type NotOffered struct {
+	Region   string   `json:"region"`
+	Services []string `json:"services"`
+	// Ops are the failed calls behind Services. They stay out of the JSON but
+	// keep the savings ledger treating these checks as unread here, so a DNS
+	// hiccup on one endpoint can never book a fake fix.
+	Ops []string `json:"-"`
+}
+
 // deniedCodes are the error codes AWS uses for "not allowed", per API family.
 var deniedCodes = map[string]bool{
 	"AccessDenied":          true, // ELB, most query APIs
@@ -26,11 +39,28 @@ var deniedCodes = map[string]bool{
 	"UnauthorizedOperation": true, // EC2
 }
 
-// splitSkips separates region restrictions from real skips. A denied call
-// counts as region-blocked only when the same call worked in at least one
-// other scanned region; a call denied everywhere is a missing permission and
-// stays a skip.
-func splitSkips(regions []string, skipped []inventory.Skip) (real []inventory.Skip, blocked []Blocked) {
+// alwaysCalled are free-plan EC2 reads Load always makes in every region. If
+// any of them is missing from that region's skips, the call succeeded and the
+// region was reached — even when the account is empty and there are no findings.
+var alwaysCalled = []string{
+	"ec2:DescribeVolumes",
+	"ec2:DescribeInstances",
+	"ec2:DescribeAddresses",
+	"ec2:DescribeSnapshots",
+	"ec2:DescribeImages",
+	"ec2:DescribeNatGateways",
+	"ec2:DescribeVpcEndpoints",
+}
+
+// splitSkips separates region restrictions and "not offered here" from real
+// skips. A denied call counts as region-blocked only when the same call worked
+// in at least one other scanned region; a call denied everywhere is a missing
+// permission and stays a skip. A DNS "no such host" counts as not-offered only
+// when at least one other AWS call in that region succeeded (an always-called
+// EC2 read is absent from that region's skips); when nothing succeeded
+// (VPN/DNS down), they stay skips so the savings ledger never treats an
+// unread region as clean.
+func splitSkips(regions []string, skipped []inventory.Skip) (real []inventory.Skip, blocked []Blocked, notOffered []NotOffered) {
 	failedIn := map[string]map[string]bool{} // call -> regions where it failed
 	for _, s := range skipped {
 		if failedIn[s.What] == nil {
@@ -46,22 +76,74 @@ func splitSkips(regions []string, skipped []inventory.Skip) (real []inventory.Sk
 		}
 		return false
 	}
-	byRegion := map[string][]string{}
+
+	byRegion := map[string][]inventory.Skip{}
+	var order []string
 	for _, s := range skipped {
-		// A global call (Route 53, the bucket list) runs once, not per region:
-		// "it worked in another region" says nothing about it.
-		if s.Region != "global" && deniedCodes[s.Error] && worksSomewhere(s.What) {
-			byRegion[s.Region] = append(byRegion[s.Region], s.What)
+		if _, ok := byRegion[s.Region]; !ok {
+			order = append(order, s.Region)
+		}
+		byRegion[s.Region] = append(byRegion[s.Region], s)
+	}
+
+	// A region was reached when an always-called EC2 read is not among its
+	// skips: Load always attempts those, so absence means success.
+	reached := map[string]bool{}
+	for region, list := range byRegion {
+		if region == "global" || strings.HasSuffix(region, "/global") {
 			continue
 		}
-		real = append(real, s)
+		failed := map[string]bool{}
+		for _, s := range list {
+			failed[s.What] = true
+		}
+		for _, c := range alwaysCalled {
+			if !failed[c] {
+				reached[region] = true
+				break
+			}
+		}
 	}
-	for r, calls := range byRegion {
+
+	blockedBy := map[string][]string{}
+	offeredBy := map[string]map[string]bool{}
+	opsBy := map[string][]string{}
+	var offeredOrder []string
+	for _, region := range order {
+		for _, s := range byRegion[region] {
+			if s.Region != "global" && !strings.HasSuffix(s.Region, "/global") &&
+				s.Error == inventory.NoSuchHost && reached[s.Region] {
+				if offeredBy[s.Region] == nil {
+					offeredBy[s.Region] = map[string]bool{}
+					offeredOrder = append(offeredOrder, s.Region)
+				}
+				offeredBy[s.Region][inventory.ServiceLabel(s.What)] = true
+				opsBy[s.Region] = append(opsBy[s.Region], s.What)
+				continue
+			}
+			if s.Region != "global" && !strings.HasSuffix(s.Region, "/global") &&
+				deniedCodes[s.Error] && worksSomewhere(s.What) {
+				blockedBy[s.Region] = append(blockedBy[s.Region], s.What)
+				continue
+			}
+			real = append(real, s)
+		}
+	}
+	for r, calls := range blockedBy {
 		sort.Strings(calls)
 		blocked = append(blocked, Blocked{Region: r, Calls: calls})
 	}
 	sort.Slice(blocked, func(i, j int) bool { return blocked[i].Region < blocked[j].Region })
-	return real, blocked
+	for _, r := range offeredOrder {
+		names := make([]string, 0, len(offeredBy[r]))
+		for n := range offeredBy[r] {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		notOffered = append(notOffered, NotOffered{Region: r, Services: names, Ops: opsBy[r]})
+	}
+	sort.Slice(notOffered, func(i, j int) bool { return notOffered[i].Region < notOffered[j].Region })
+	return real, blocked, notOffered
 }
 
 // writeSkips prints real skips grouped by call and error, so one missing
@@ -111,4 +193,12 @@ func writeBlocked(w io.Writer, blocked []Blocked) {
 		line += item
 	}
 	fmt.Fprintf(w, "%s\n\n", line)
+}
+
+// WriteNotOffered prints one short line per region whose missing endpoints are
+// services AWS doesn't offer there (not permission or network failures).
+func WriteNotOffered(w io.Writer, notOffered []NotOffered) {
+	for _, n := range notOffered {
+		fmt.Fprintf(w, "%s: %s aren't offered here\n", n.Region, strings.Join(n.Services, ", "))
+	}
 }
