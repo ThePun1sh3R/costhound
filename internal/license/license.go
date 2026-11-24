@@ -50,14 +50,19 @@ const EnvVar = "COSTHOUND_LICENSE"
 // A key only works for the AWS accounts it names, or for every account in
 // the AWS Organization it names. costhound reads the account it scans from
 // STS, so a key passed to someone else does nothing on their AWS.
+//
+// Optional Azure fields (absent on older keys): Subscriptions lists Azure
+// subscription GUIDs; Tenant names a whole Microsoft Entra tenant (Team).
 type Claims struct {
-	ID       string   `json:"id"`
-	Plan     string   `json:"plan"`
-	Accounts []string `json:"accounts,omitempty"` // 12-digit AWS account IDs
-	Org      string   `json:"org,omitempty"`      // AWS Organization ID (o-...)
-	Issued   int64    `json:"iat"`
-	Expires  int64    `json:"exp,omitempty"` // unix seconds; 0 = never
-	Note     string   `json:"note,omitempty"`
+	ID            string   `json:"id"`
+	Plan          string   `json:"plan"`
+	Accounts      []string `json:"accounts,omitempty"`      // 12-digit AWS account IDs
+	Org           string   `json:"org,omitempty"`           // AWS Organization ID (o-...)
+	Subscriptions []string `json:"subscriptions,omitempty"` // Azure subscription GUIDs (lowercase)
+	Tenant        string   `json:"tenant,omitempty"`        // Azure tenant GUID (lowercase)
+	Issued        int64    `json:"iat"`
+	Expires       int64    `json:"exp,omitempty"` // unix seconds; 0 = never
+	Note          string   `json:"note,omitempty"`
 }
 
 // Covers reports whether the key is valid for this AWS account. org is the
@@ -82,6 +87,12 @@ func (c Claims) Scope() string {
 	}
 	if len(c.Accounts) > 0 {
 		parts = append(parts, "account(s) "+strings.Join(c.Accounts, ", "))
+	}
+	if c.Tenant != "" {
+		parts = append(parts, "tenant "+c.Tenant)
+	}
+	if len(c.Subscriptions) > 0 {
+		parts = append(parts, "subscription(s) "+strings.Join(c.Subscriptions, ", "))
 	}
 	return strings.Join(parts, " and ")
 }

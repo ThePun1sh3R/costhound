@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -32,7 +33,18 @@ func TestServiceLabel(t *testing.T) {
 	if got := ServiceLabel("glue:ListSessions"); got != "Glue" {
 		t.Fatalf("got %q", got)
 	}
+	if got := ServiceLabel("kendra:ListIndices"); got != "Kendra" {
+		t.Fatalf("got %q", got)
+	}
 	if got := ServiceLabel("s3:ListBuckets"); got != "s3" {
 		t.Fatalf("unknown service: %q", got)
+	}
+}
+
+func TestServiceLabelsAreDisplayNames(t *testing.T) {
+	for id, name := range serviceLabels {
+		if name != "" && name == strings.ToLower(name) {
+			t.Errorf("serviceLabels[%q] = %q: must be a display name, not all lowercase", id, name)
+		}
 	}
 }

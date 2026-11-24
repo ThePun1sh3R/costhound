@@ -70,7 +70,7 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
-func run(args []string) int {
+func runDefault(args []string) int {
 	if len(args) > 0 && args[0] == "serve" {
 		return serve(args[1:])
 	}

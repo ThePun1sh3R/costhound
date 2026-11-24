@@ -28,7 +28,7 @@ kept=0 skipped=0
 while IFS= read -r f; do
   case "$f" in
     cmd/costhound-license/*|internal/fixplan/*|scripts/e2e-bundle.sh|scripts/demo-report.go|scripts/demo-history.go|LICENSE-PRO|.gitleaksignore) skipped=$((skipped + 1)); continue ;;
-    internal/report/report.html|internal/dashboard/dashboard.html) skipped=$((skipped + 1)); continue ;; # the paid HTML report's and dashboard's templates
+    internal/report/report.html|internal/dashboard/dashboard.html|internal/azure/testdata/*) skipped=$((skipped + 1)); continue ;; # assets used only by paid Go files
   esac
   if [[ "$f" == *.go ]]; then
     case "$(head -n 1 "$f")" in
@@ -40,7 +40,12 @@ while IFS= read -r f; do
     esac
   fi
   mkdir -p "$DEST/$(dirname "$f")"
-  cp -p "$f" "$DEST/$f"
+  if [[ "$f" == go.mod ]]; then
+    # Drop paid module roots before tidy so they can't select versions for the free tree.
+    sed -E '/\/\/ (indirect; )?paid-only$/d' "$f" > "$DEST/$f"
+  else
+    cp -p "$f" "$DEST/$f"
+  fi
   kept=$((kept + 1))
 done < <(git ls-files)
 echo "exported $kept files to $DEST ($skipped paid or private files left out)"

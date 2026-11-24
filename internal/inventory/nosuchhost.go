@@ -46,6 +46,7 @@ var serviceLabels = map[string]string{
 	"docdb-elastic": "DocumentDB Elastic",
 	"glue":          "Glue",
 	"workspaces":    "WorkSpaces",
+	"kendra":        "Kendra",
 	"lightsail":     "Lightsail",
 	"mwaa":          "MWAA",
 	"proton":        "Proton",

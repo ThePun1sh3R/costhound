@@ -6,7 +6,7 @@ Website, a demo report and Pro/Team keys: https://costhound.dev
 
 ```
 $ costhound
-costhound v0.4.0 (free) · AWS waste report
+costhound v0.5.0 (free) · AWS waste report
 Account 123456789012 · 17 region(s) · 2026-11-19 09:02 UTC
 
 Estimated waste: $1,248.20 / month  (about $14,978.40 / year)
@@ -418,6 +418,68 @@ If a permission is missing, costhound skips only that check and lists what it co
 ## How the prices are estimated
 
 On the free plan, prices are us-east-1 on-demand list prices built into the tool; most other regions cost the same or up to about 20% more. Pro and Team read each scanned region's prices from the AWS Price List where they can, and use the built-in ones for the rest. Cost Optimization Hub findings use AWS's own estimate at your real prices. Snapshot storage is incremental, so a group of snapshots is priced only when every snapshot of that volume can be deleted. Use the numbers to rank where your money goes; your bill will differ.
+
+## Azure (preview)
+
+Pro and Team can also scan Azure. The report is labelled Azure (preview).
+
+### What it scans
+
+| Check | What it finds |
+|---|---|
+| Unattached managed disks | Disks in diskState Unattached, billed for capacity until deleted |
+| Stopped-but-allocated VMs | VMs in PowerState/stopped that still incur compute; deallocate stops that charge (disks stay billed) |
+| Disks kept on deallocated VMs | Managed disks still attached to a PowerState/deallocated VM |
+| Idle running VMs | Running VMs with covered low CPU, network and disk ops over the metric window |
+| Oversized running VMs | Running VMs whose peaks fit the next-smaller allowlisted size in the same family |
+| Unused Standard static public IPv4 | Standard static public IPv4 addresses with no IP configuration or NAT gateway |
+| Idle NAT gateways | Standard NAT gateways with no subnets, or with covered zero ByteCount |
+| Empty Standard internal load balancers | Standard regional internal LBs with billable rules and empty backends |
+| Idle Application Gateway v2 | Standard_v2 / WAF_v2 gateways with covered zero requests and bytes |
+| VPN gateways with no connections | VPN gateways with zero connections and no point-to-site pool |
+| Idle Basic Bastion | Basic Bastion hosts with covered zero sessions |
+| Empty paid Linux App Service plans | Paid dedicated Linux plans with a complete empty site list |
+| Idle paid Linux App Service plans | Paid dedicated Linux plans whose sites show covered idle traffic and low plan CPU |
+| Idle Standard DTU SQL databases | Single Standard DTU databases with covered low DTU, no sessions and zero successful connections |
+| Empty Standard DTU SQL elastic pools | Active Standard DTU pools with a complete empty database list |
+
+Azure Advisor Cost recommendations are read too. When one matches a costhound finding on the same resource and charge, costhound's finding wins and shows Advisor's advice; otherwise they appear as unpriced `azure-advisor` findings.
+
+### How to run
+
+After `az login` (Pro or Team):
+
+```
+costhound azure -auth cli -tenant <tenant-guid> -subscriptions <sub-guid>[,…]
+costhound azure -auth cli -tenant <tenant-guid> -subscriptions <sub-guid> -json
+costhound azure -auth cli -tenant <tenant-guid> -subscriptions <sub-guid> -out fixes
+```
+
+Team, with a service principal (`AZURE_CLIENT_SECRET` in the environment):
+
+```
+costhound azure -auth service-principal -tenant <tenant-guid> -subscriptions <sub-guid> -client-id <app-guid>
+```
+
+### Plans
+
+Pro covers up to 3 slots shared by AWS account IDs and Azure subscription IDs, and scans Azure only with interactive `az login` (`-auth cli`). Team covers a whole Azure tenant or listed subscriptions, and service-principal scans. The key must name the subscriptions or the tenant.
+
+### Permissions
+
+The built-in Reader role on each scanned subscription. costhound only sends GET requests to Azure Resource Manager, from a fixed allowlist, and never reads data inside resources.
+
+### Prices
+
+From the public Azure Retail Prices API, USD list prices. A missing or ambiguous meter leaves a finding unpriced.
+
+### Fix bundles
+
+`-out` writes `apply.sh` and `rollback.sh` for stopped-but-allocated VMs (deallocate after live re-checks; rollback starts the VM). Disks, IPs and the rest are review steps. costhound never runs them.
+
+### Limits
+
+Preview: no run history or savings ledger for Azure yet.
 
 ## Development
 
