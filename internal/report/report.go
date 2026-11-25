@@ -13,7 +13,6 @@ import (
 
 	"github.com/ThePun1sh3R/costhound/internal/checks"
 	"github.com/ThePun1sh3R/costhound/internal/inventory"
-	"github.com/ThePun1sh3R/costhound/internal/license"
 )
 
 // PriceNote is printed with every report.
@@ -85,6 +84,22 @@ type Report struct {
 	Redaction    *RedactInfo    `json:"redaction,omitempty"` // set on a copy made for sharing (-redact)
 	Upcoming     []checks.Cliff `json:"upcoming,omitempty"`  // paid plans: the cost-cliff calendar, by date
 	TFStates     []string       `json:"tf_states,omitempty"` // Terraform state files read (-tf-state)
+	// ProPreview is the free-plan -pro-preview aggregate only (count and
+	// dollars). Never holds finding details, names or IDs.
+	ProPreview *ProPreview `json:"pro_preview,omitempty"`
+	// FreeIncomplete is set when the free scan hit the shared deadline before
+	// any -pro-preview Pro scan. Drives the "report below is incomplete" line;
+	// not saved.
+	FreeIncomplete bool `json:"-"`
+}
+
+// ProPreview is what -pro-preview adds to a free report: how many more
+// findings Pro would surface and about how many dollars a month, with no
+// per-finding detail.
+type ProPreview struct {
+	Count      int     `json:"count"`
+	MonthlyUSD float64 `json:"monthly_usd"`
+	Partial    bool    `json:"partial"` // a Pro read was denied or skipped
 }
 
 // New builds a report, dropping priced findings under minUSD (counted in
@@ -261,13 +276,7 @@ func (r *Report) Text(w io.Writer, showFix bool) {
 
 	r.writeRun(w)
 	if r.Plan == "free" {
-		if n := checks.Count(license.PlanPro); n > 0 {
-			p("Pro adds %d more checks (usage-based idle resources, AWS Compute Optimizer and Cost Optimization Hub advice, extended-support cliffs, ...): %s\n", n, license.RenewURL)
-		}
-		if checks.Count(license.PlanTeam) > 0 {
-			p("Team adds Organization-wide reports, Slack and CI gates.\n")
-		}
-		p("costhound Pro also writes each fix as a script to review and run, with a backup where AWS allows one, and a rollback (costhound plan).\n\n")
+		writeFreeUpsell(w, r)
 	} else if len(r.Findings) > 0 {
 		p("Fix scripts to review and run, with a backup where AWS allows one, and a rollback: costhound plan -out <new folder>\n\n")
 	}

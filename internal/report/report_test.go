@@ -3,7 +3,6 @@ package report
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -66,8 +65,6 @@ func TestText(t *testing.T) {
 		"Not priced, worth a look:", "t2.micro",
 		"Couldn't check", "logs:DescribeLogGroups", "AccessDeniedException", "all regions",
 		"never changes anything",
-		"Pro adds ",
-		"more checks (usage-based idle resources, AWS Compute Optimizer and Cost Optimization Hub advice, extended-support cliffs, ...): https://costhound.dev",
 		"Team adds Organization-wide reports, Slack and CI gates.",
 	} {
 		if !strings.Contains(out, want) {
@@ -80,6 +77,7 @@ func TestText(t *testing.T) {
 	if strings.Contains(out, "NAT gateways with (almost) no traffic") || strings.Contains(out, "Savings Plans and Reserved Instances to buy") {
 		t.Errorf("free upsell still lists check titles:\n%s", out)
 	}
+	assertFreeUpsell(t, out)
 	// The run's own price note, not the built-in one, when the run set it.
 	r := sample()
 	r.PriceNote = "Prices are each region's on-demand prices from the AWS Price List."
@@ -104,28 +102,14 @@ func TestTextEmpty(t *testing.T) {
 	}
 }
 
-// The free upsell's Pro count is the registry's PlanPro total, so a new check
-// can't leave the pitch behind.
-func TestFreeUpsellCountMatchesRegistry(t *testing.T) {
-	var b bytes.Buffer
-	sample().Text(&b, false)
-	out := b.String()
-	want := fmt.Sprintf("Pro adds %d more checks (", checks.Count(license.PlanPro))
-	if !strings.Contains(out, want) {
-		t.Errorf("upsell count drifts from registry (%d):\n%s", checks.Count(license.PlanPro), out)
-	}
-	if checks.Count(license.PlanTeam) == 0 {
-		t.Fatal("registry has no Team checks; Team upsell line is gated on that count")
-	}
-	if !strings.Contains(out, "Team adds Organization-wide reports, Slack and CI gates.") {
-		t.Errorf("free upsell misses Team line:\n%s", out)
-	}
+func TestPaidPlanSkipsFreeUpsell(t *testing.T) {
 	r := sample()
 	r.Plan = license.PlanPro
-	b.Reset()
+	var b bytes.Buffer
 	r.Text(&b, false)
-	if strings.Contains(b.String(), "Pro adds ") || strings.Contains(b.String(), "Team adds ") {
-		t.Errorf("paid plan still prints the free upsell:\n%s", b.String())
+	out := b.String()
+	if strings.Contains(out, "Pro adds ") || strings.Contains(out, "Team adds ") || strings.Contains(out, "-pro-preview") {
+		t.Errorf("paid plan still prints the free upsell:\n%s", out)
 	}
 }
 

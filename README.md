@@ -62,7 +62,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 | | Free | Pro | Team |
 |---|---|---|---|
-| Who | anyone | one person, up to 3 AWS accounts | a company, every account |
+| Who | anyone | one person, up to 3 slots (AWS accounts, Azure subscriptions or GCP projects) | a company, every account |
 | Checks | 43 classic waste checks | + 66 checks: usage-based, extended support, AWS Cost Optimization Hub, Compute Optimizer | + 3 checks: Savings Plans and Reserved Instances to buy or about to end, databases idle at the same hours every week |
 | Report | text, JSON | + interactive HTML report, "new since last run", cost-cliff calendar, redacted and signed copies | + one report for the whole AWS Organization, Terraform state mapping |
 | Fixes | a fix command per finding | + fix bundles: each fix as a script that checks again, backs up, changes, verifies, with a rollback | + one folder per account of the Organization |
@@ -71,7 +71,17 @@ sha256sum -c SHA256SUMS --ignore-missing
 | Dashboard | | | `costhound serve`: waste over time, new and fixed since the last run (localhost only) |
 | Source | MIT, on GitHub | official binary + license key | official binary + license key |
 
-A license key is checked offline and is tied to the AWS accounts (or AWS Organization) it was bought for. Keys are sold at https://costhound.dev (USDC on Base today; card payments are coming).
+A license key is checked offline and is tied to the AWS accounts (or AWS Organization), Azure subscriptions (or a Team tenant) and GCP projects it was bought for. Keys are sold at https://costhound.dev (USDC on Base today; card payments are coming).
+
+In the official release, a free scan ends with an invite. `costhound -pro-preview` runs the free scan unchanged, then the Pro checks on the same account, and prints only one line: how many more findings Pro would find and about how much they are worth per month, or "at least" when a Pro read was denied or skipped. It shows no Pro finding details and saves nothing. The Pro checks read CloudWatch metrics, which can cost a few cents. It does nothing on a Pro or Team key, nor in builds from source, and `-org` scans ignore it.
+
+The verified-savings ledger also feeds a monthly report:
+
+```
+costhound savings -month YYYY-MM -history-dir DIR -json -html FILE
+```
+
+It shows the fixes verified in that month, what they save per month, saved so far this month and since the first fix, the top fixes, and fixes that came back, across the AWS, Azure and GCP history on this machine. `-html` writes a one-page, self-contained summary to share. It needs Pro or Team.
 
 ## What it checks
 
@@ -442,6 +452,13 @@ Pro and Team can also scan Azure. The report is labelled Azure (preview).
 | Idle paid Linux App Service plans | Paid dedicated Linux plans whose sites show covered idle traffic and low plan CPU |
 | Idle Standard DTU SQL databases | Single Standard DTU databases with covered low DTU, no sessions and zero successful connections |
 | Empty Standard DTU SQL elastic pools | Active Standard DTU pools with a complete empty database list |
+| Idle Standard/Premium Azure Firewalls | Standard or Premium Firewalls with covered zero DataProcessed |
+| Idle PostgreSQL/MySQL flexible servers | Running flexible servers with covered low CPU and zero active connections |
+| Idle Azure Cache for Redis | Caches with covered zero clients and commands processed |
+| Empty AKS Standard clusters | AKS Standard clusters with every node pool at zero nodes and no autoscaling growth |
+| Idle Event Hubs Premium namespaces | Premium Event Hubs namespaces with covered zero incoming and outgoing messages |
+| Idle Service Bus Premium namespaces | Premium Service Bus namespaces with covered zero incoming and outgoing messages |
+| Unused Standard public IP prefixes | Standard public IP prefixes with no allocated addresses |
 
 Azure Advisor Cost recommendations are read too. When one matches a costhound finding on the same resource and charge, costhound's finding wins and shows Advisor's advice; otherwise they appear as unpriced `azure-advisor` findings.
 
@@ -463,7 +480,7 @@ costhound azure -auth service-principal -tenant <tenant-guid> -subscriptions <su
 
 ### Plans
 
-Pro covers up to 3 slots shared by AWS account IDs and Azure subscription IDs, and scans Azure only with interactive `az login` (`-auth cli`). Team covers a whole Azure tenant or listed subscriptions, and service-principal scans. The key must name the subscriptions or the tenant.
+Pro covers up to 3 slots shared by AWS account IDs, Azure subscription IDs and GCP project IDs, and scans Azure only with interactive `az login` (`-auth cli`). Team covers a whole Azure tenant or listed subscriptions, and service-principal scans. The key must name the subscriptions or the tenant.
 
 ### Permissions
 
@@ -479,7 +496,71 @@ From the public Azure Retail Prices API, USD list prices. A missing or ambiguous
 
 ### Limits
 
-Preview: no run history or savings ledger for Azure yet.
+Preview: each run is compared with the last scan of the same subscription set, and the verified-savings ledger records confirmed fixes (counted once, with what they have saved so far). `-no-history` skips both.
+
+## Google Cloud (preview)
+
+Pro and Team can also scan Google Cloud. The report is labelled GCP (preview).
+
+### What it scans
+
+| Check | What it finds |
+|---|---|
+| Unattached Persistent Disks | READY disks with no users, unattached for 7+ days, billed for capacity until deleted |
+| Disks kept on stopped VMs | Persistent Disks still attached to a TERMINATED VM |
+| Unused static public IPv4 | RESERVED static external IPv4 addresses with no users |
+| Idle running VMs | Running allowlisted E2 VMs with covered low CPU, network and disk ops over the metric window |
+| Oversized running VMs | Running allowlisted E2 VMs whose peaks fit the next-smaller allowlisted size in the same family |
+| Idle pd-ssd that fit pd-balanced | pd-ssd disks on running VMs whose covered IOPS/throughput fit pd-balanced limits |
+| Idle Public NAT gateways | Public NATs with no attributable subnets, or with covered zero NAT bytes |
+| Idle HTTP(S) forwarding rules | Global external HTTP(S) forwarding rules with empty backends or covered zero requests |
+| Idle Classic VPN tunnels | ESTABLISHED Classic VPN tunnels with covered zero traffic |
+| Idle Cloud SQL PostgreSQL | Running Enterprise Cloud SQL PostgreSQL with covered low CPU and near-zero backends |
+| Stopped Cloud SQL storage | Stopped Cloud SQL PostgreSQL instances that still bill configured storage |
+| Idle Memorystore Redis | Basic Memorystore Redis with covered near-zero clients and no workload commands |
+| Idle Filestore | Filestore instances with covered zero NFS activity |
+| Idle Cloud Run minimum instances | Cloud Run services with a service-level minimum and covered zero requests |
+| Empty regional GKE Standard clusters | Regional GKE Standard clusters with zero nodes and no autoscaling growth |
+| Idle Cloud Composer 2 environments | Running Composer 2 environments with covered zero DAG and task runs |
+| Idle Vertex AI endpoints | Endpoints with dedicated replicas and covered zero predictions |
+| Idle Spanner instances | Provisioned Spanner with covered near-zero CPU and no API requests |
+| Idle AlloyDB primaries | Running AlloyDB primaries with covered low CPU and near-zero backends |
+| Idle Bigtable instances | PRODUCTION Bigtable with serve nodes and covered zero server requests |
+| Idle Dataproc clusters | RUNNING Dataproc clusters with covered zero jobs |
+
+GCP Recommender ACTIVE recommendations (idle VM/disk/address and machine-type) are read too. When one matches a costhound finding on the same resource, costhound's finding wins and shows Recommender's advice; otherwise they appear as unpriced `gcp-recommender` findings.
+
+### How to run
+
+After `gcloud auth application-default login` (Pro or Team):
+
+```
+costhound gcp -projects <project-id>[,…] -quota-project <project-id>
+costhound gcp -projects <project-id> -quota-project <project-id> -json
+costhound gcp -projects <project-id> -quota-project <project-id> -out fixes
+```
+
+`-quota-project` can also come from `$GOOGLE_CLOUD_QUOTA_PROJECT`. Team can use a service account via Application Default Credentials; Pro refuses service accounts and needs your own user login.
+
+### Plans
+
+Pro covers up to 3 slots shared by AWS account IDs, Azure subscription IDs and GCP project IDs, and scans GCP only with your own `gcloud auth application-default login`. Team can also use service-account credentials. The key must list the projects.
+
+### Permissions
+
+Viewer and Recommender Viewer on each scanned project. costhound only sends GET requests to Google APIs, from a fixed allowlist, and never reads data inside resources.
+
+### Prices
+
+From Google's Cloud Billing Catalog (USD list prices). A dated catalog snapshot (2026-11-25) covers us-central1, us-east1, us-west1, europe-west1, europe-west4, asia-east1 and asia-southeast1. With `$COSTHOUND_GCP_CATALOG_KEY` set, live catalog prices are used for the same SKUs. Other regions and unsupported configurations (other machine families, Cloud SQL Enterprise Plus, multi-region Spanner, unread Cloud Run billing, and similar cases) stay unpriced.
+
+### Fix bundles
+
+`-out` writes `apply.sh` and `rollback.sh` for idle running VMs (stop after live re-checks; rollback starts the VM). Disks, IPs and the rest are review steps. costhound never runs them.
+
+### Limits
+
+Preview.
 
 ## Development
 

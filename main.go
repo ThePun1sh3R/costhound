@@ -89,12 +89,16 @@ func runDefault(args []string) int {
 	if len(args) > 0 && args[0] == "verify" {
 		return verify(args[1:], os.Stdout)
 	}
+	if len(args) > 0 && args[0] == "savings" {
+		return runSavings(args[1:])
+	}
 	fs := flag.NewFlagSet("costhound", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "costhound %s: find AWS resources that cost money for nothing (read-only)\n\nUsage: costhound [flags]\n"+
 			"       costhound explain <finding id>    everything costhound knows about one finding\n"+
 			"       costhound buy                     a purchase link with this account's ID already filled in\n"+
 			"       costhound plan -out <new folder>  Pro: fix scripts to review and run, with a backup where AWS allows one, and a rollback\n"+
+			"       costhound savings                 Pro/Team: monthly verified-savings report from the ledger\n"+
 			"       costhound serve                   Team: local dashboard over saved runs\n"+
 			"       costhound keygen                  make the key that signs your reports (-sign)\n"+
 			"       costhound verify <report.json>    check a signed report, and what its signature proves\n\nFlags:\n", version)
@@ -136,6 +140,7 @@ func runDefault(args []string) int {
 	concurrency := fs.Int("concurrency", 6, "regions scanned at the same time")
 	timeout := fs.Duration("timeout", 10*time.Minute, "give up after this long")
 	licenseFlag := fs.String("license", "", "Pro/Team license key, or a file holding it (default: $"+license.EnvVar+", then <config dir>/costhound/license)")
+	proPreview := fs.Bool("pro-preview", false, "on the free plan (official build): also run the Pro checks and print only how many more findings/$ they find (no details)")
 	showVersion := fs.Bool("version", false, "print the version and plan, then exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -230,6 +235,15 @@ func runDefault(args []string) int {
 	checkOpts.UsageDays = *usageDays
 	checkOpts.Creators = *creators && !*orgMode
 	checkOpts.MinIngestGiBMonth = *minIngest
+	if *proPreview {
+		if !checks.BuildHasPro {
+			fmt.Fprintln(os.Stderr, "costhound: -pro-preview is in the official costhound release, not in builds from source.")
+			*proPreview = false
+		} else if license.Rank(lic.Plan) >= license.Rank(license.PlanPro) {
+			fmt.Fprintln(os.Stderr, "costhound: -pro-preview does nothing on a Pro or Team plan; this scan already runs the Pro checks.")
+			*proPreview = false
+		}
+	}
 	rules, err := loadIgnore(*ignoreFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "costhound: %v\n", err)
@@ -240,7 +254,7 @@ func runDefault(args []string) int {
 		return 2
 	}
 	st := settings{regionsFlag: *regionsFlag, o: checkOpts, concurrency: *concurrency, minUSD: *minUSD, noHistory: *noHistory, historyDir: *historyDir, ignore: rules, org: org,
-		owners: owner.NewKeys(rules.OwnerKeys()).WithAliases(rules.OwnerAliases())}
+		owners: owner.NewKeys(rules.OwnerKeys()).WithAliases(rules.OwnerAliases()), proPreview: *proPreview}
 
 	var rep *report.Report
 	if *orgMode {
@@ -256,7 +270,12 @@ func runDefault(args []string) int {
 		fmt.Fprintf(os.Stderr, "costhound: %v\n", err)
 		return 1
 	}
-	if ctx.Err() != nil {
+	// -pro-preview decides free incompleteness inside scanAccount before the
+	// Pro scan; other paths use the shared deadline after the scan returns.
+	if rep != nil && !st.proPreview && ctx.Err() != nil {
+		rep.FreeIncomplete = true
+	}
+	if rep != nil && rep.FreeIncomplete {
 		fmt.Fprintf(os.Stderr, "costhound: timed out after %s; the report below is incomplete\n", *timeout)
 	}
 	if len(tfStates) > 0 {
@@ -651,6 +670,7 @@ type settings struct {
 	owners      owner.Keys
 	orgPlans    *orgPlans // -org: every scanned account's Savings Plans
 	orgHub      *orgHub   // -org: the Organization management account's Cost Optimization Hub
+	proPreview  bool      // free plan: also run Pro checks for an aggregate only
 }
 
 // scanAccount runs the whole pipeline for one account: regions, checks, Cost
@@ -687,8 +707,16 @@ func scanAccount(ctx context.Context, cfg aws.Config, account string, st setting
 	rep.Settings = fmt.Sprintf("min-usd=%g snapshot-age=%d stopped-days=%d secret-days=%d min-log-gib=%g usage-days=%d min-ingest-gib=%g",
 		st.minUSD, st.o.SnapshotAgeDays, st.o.StoppedDays, st.o.SecretDays, st.o.MinLogGiB, st.o.UsageDays, st.o.MinIngestGiBMonth)
 	st.ignore.Apply(rep, st.o.Now)
+	// Decide free-report completeness before -pro-preview shares this timeout.
+	freeTimedOut := ctx.Err() != nil
+	rep.FreeIncomplete = freeTimedOut
 	if paid && !st.noHistory {
-		keepHistory(rep, st.historyDir, ctx.Err() == nil)
+		keepHistory(rep, st.historyDir, !freeTimedOut)
+	}
+	// Free report is complete. -pro-preview then runs a second Pro scan and
+	// attaches only an aggregate; it must not change the free findings above.
+	if st.proPreview {
+		attachProPreview(ctx, cfg, account, st, regions, rep, freeTimedOut)
 	}
 	return rep, nil
 }

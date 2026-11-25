@@ -53,6 +53,7 @@ const EnvVar = "COSTHOUND_LICENSE"
 //
 // Optional Azure fields (absent on older keys): Subscriptions lists Azure
 // subscription GUIDs; Tenant names a whole Microsoft Entra tenant (Team).
+// Optional GCP field (absent on older keys): Projects lists GCP project IDs.
 type Claims struct {
 	ID            string   `json:"id"`
 	Plan          string   `json:"plan"`
@@ -60,6 +61,7 @@ type Claims struct {
 	Org           string   `json:"org,omitempty"`           // AWS Organization ID (o-...)
 	Subscriptions []string `json:"subscriptions,omitempty"` // Azure subscription GUIDs (lowercase)
 	Tenant        string   `json:"tenant,omitempty"`        // Azure tenant GUID (lowercase)
+	Projects      []string `json:"projects,omitempty"`      // GCP project IDs (lowercase)
 	Issued        int64    `json:"iat"`
 	Expires       int64    `json:"exp,omitempty"` // unix seconds; 0 = never
 	Note          string   `json:"note,omitempty"`
@@ -93,6 +95,9 @@ func (c Claims) Scope() string {
 	}
 	if len(c.Subscriptions) > 0 {
 		parts = append(parts, "subscription(s) "+strings.Join(c.Subscriptions, ", "))
+	}
+	if len(c.Projects) > 0 {
+		parts = append(parts, "project(s) "+strings.Join(c.Projects, ", "))
 	}
 	return strings.Join(parts, " and ")
 }
