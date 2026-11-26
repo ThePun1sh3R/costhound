@@ -15,7 +15,8 @@ R=eu-west-1
 [ -x "$BIN" ] || { echo "build first: make build" >&2; exit 1; }
 if [ ! -x "$VENV/bin/moto_server" ]; then
   python3 -m venv "$VENV"
-  "$VENV/bin/pip" install -q "moto[server]"
+  # 5.2.6 broke this script (CertificateAuthority.to_json).
+  "$VENV/bin/pip" install -q "moto[server]==5.2.5"
 fi
 
 # Moto can't stop Transfer servers. Seed the stopped state through its model.

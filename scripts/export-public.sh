@@ -28,7 +28,7 @@ kept=0 skipped=0
 while IFS= read -r f; do
   case "$f" in
     cmd/costhound-license/*|internal/fixplan/*|scripts/e2e-bundle.sh|scripts/demo-report.go|scripts/demo-history.go|LICENSE-PRO|.gitleaksignore) skipped=$((skipped + 1)); continue ;;
-    internal/report/report.html|internal/dashboard/dashboard.html|internal/azure/testdata/*) skipped=$((skipped + 1)); continue ;; # assets used only by paid Go files
+    internal/report/report.html|internal/report/cloud_report.html|internal/dashboard/dashboard.html|internal/azure/testdata/*) skipped=$((skipped + 1)); continue ;; # assets used only by paid Go files
   esac
   if [[ "$f" == *.go ]]; then
     case "$(head -n 1 "$f")" in

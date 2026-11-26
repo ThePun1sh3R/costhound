@@ -233,7 +233,7 @@ costhound -html report.html                  # interactive report: charts, filte
 costhound plan -out fixes                    # fix bundle: scripts to review, with a backup where AWS allows one and a rollback
 costhound -org                               # Team: every account of your AWS Organization
 costhound -slack-webhook https://hooks.slack.com/...   # Team: post a summary
-costhound -fail-over 500                     # Team: exit 3 when waste is over $500/mo (for CI)
+costhound -fail-over 500                     # Team: exit 3 when waste is >= $500/mo (for CI)
 costhound serve                              # Team: local dashboard on http://127.0.0.1:8090 over your saved runs
 ```
 
@@ -431,7 +431,7 @@ On the free plan, prices are us-east-1 on-demand list prices built into the tool
 
 ## Azure (preview)
 
-Pro and Team can also scan Azure. The report is labelled Azure (preview).
+Pro and Team can also scan Azure. The report is labelled Azure (preview). First-time setup: [docs/azure.md](docs/azure.md).
 
 ### What it scans
 
@@ -459,8 +459,27 @@ Pro and Team can also scan Azure. The report is labelled Azure (preview).
 | Idle Event Hubs Premium namespaces | Premium Event Hubs namespaces with covered zero incoming and outgoing messages |
 | Idle Service Bus Premium namespaces | Premium Service Bus namespaces with covered zero incoming and outgoing messages |
 | Unused Standard public IP prefixes | Standard public IP prefixes with no allocated addresses |
+| Old managed-disk snapshots | Snapshots older than `-snapshot-age` days; unpriced (Azure bills used size, which ARM does not expose) |
+| Idle provisioned Gen5 vCore SQL databases | Single General Purpose / Business Critical Gen5 databases with covered low CPU, no sessions and zero successful connections |
+| Empty paid Windows App Service plans | Paid dedicated Windows plans with a complete empty site list |
+| Idle paid Windows App Service plans | Paid dedicated Windows plans whose sites show covered idle traffic and low plan CPU |
+| Idle ExpressRoute circuits | Provisioned service-provider circuits with covered zero BitsIn/BitsOut; unpriced (price zone needs peering-location mapping ARM cannot provide) |
+| Large Hot storage without lifecycle | Storage accounts with ≥1 TiB Hot blob data and no lifecycle policy; cost-only (shows Hot spend, does not guess Cool/Cold savings) |
 
 Azure Advisor Cost recommendations are read too. When one matches a costhound finding on the same resource and charge, costhound's finding wins and shows Advisor's advice; otherwise they appear as unpriced `azure-advisor` findings.
+
+App Service plan regions are stored as ARM names (for example `westeurope`, not `west europe`), so each App Service finding gets a new ID once after upgrading past that change.
+
+### Check your setup
+
+Before the first scan, verify access (read-only; no findings). Works on every plan, including free and no license:
+
+```
+costhound azure -check -auth cli -tenant <tenant-guid> -subscriptions <sub-guid>[,…]
+costhound azure -check -auth cli -tenant <tenant-guid> -subscriptions <sub-guid> -json
+```
+
+Exit 0 when access is ready (a NOTE may say your key does not cover the subscription), 1 when any line is FIX (each FIX names the role or command to run).
 
 ### How to run
 
@@ -469,6 +488,7 @@ After `az login` (Pro or Team):
 ```
 costhound azure -auth cli -tenant <tenant-guid> -subscriptions <sub-guid>[,…]
 costhound azure -auth cli -tenant <tenant-guid> -subscriptions <sub-guid> -json
+costhound azure -auth cli -tenant <tenant-guid> -subscriptions <sub-guid> -html report.html
 costhound azure -auth cli -tenant <tenant-guid> -subscriptions <sub-guid> -out fixes
 ```
 
@@ -476,7 +496,27 @@ Team, with a service principal (`AZURE_CLIENT_SECRET` in the environment):
 
 ```
 costhound azure -auth service-principal -tenant <tenant-guid> -subscriptions <sub-guid> -client-id <app-guid>
+costhound azure … -slack-webhook https://hooks.slack.com/...   # or $COSTHOUND_SLACK_WEBHOOK
+costhound azure … -fail-over 500                               # exit 3 when waste is >= $500/mo
+costhound azure … -fail-on-new                                 # exit 3 when priced waste is new since the last run
+costhound azure … -fail-on-unowned 200                         # exit 3 when unowned waste is >= $200/mo
 ```
+
+| Flag | Default | What it does |
+|---|---|---|
+| `-check` | off | verify access only (no findings); works on every plan, including free and no license |
+| `-html` | | Pro: write the interactive HTML report to this file |
+| `-slack-webhook` | | Team: post a summary to this webhook (also `$COSTHOUND_SLACK_WEBHOOK`) |
+| `-fail-over` | | Team: exit with code 3 when waste is at least this many $/month |
+| `-fail-on-new` | off | Team: exit with code 3 when there is new priced waste since the last run |
+| `-fail-on-unowned` | | Team: exit with code 3 when waste on resources with no owner tag is at least this many $/month |
+| `-snapshot-age` | 90 | report managed-disk snapshots older than this many days (must be at least 1) |
+| `-out` | | write a fix bundle to this new or empty folder |
+| `-concurrency` | 4 | subscriptions scanned at the same time |
+| `-no-history` | off | don't save this run or compare it with the last one |
+| `-history-dir` | | where runs are saved (default: `<config dir>/costhound/runs`) |
+
+A failed Slack post warns and does not change the exit code. `-fail-on-new` with `-no-history` or no previous run fails nothing and prints why.
 
 ### Plans
 
@@ -492,7 +532,15 @@ From the public Azure Retail Prices API, USD list prices. A missing or ambiguous
 
 ### Fix bundles
 
-`-out` writes `apply.sh` and `rollback.sh` for stopped-but-allocated VMs (deallocate after live re-checks; rollback starts the VM). Disks, IPs and the rest are review steps. costhound never runs them.
+`-out` writes `apply.sh` and `rollback.sh` for five kinds of finding; costhound never runs them. Every apply.sh re-checks the resource live (it still exists and is still stopped, unattached, unused, empty or Ready, with the reported size or SKU and the same tags), asks first, and changes nothing if anything differs:
+
+- stopped-but-allocated VMs: deallocate; rollback starts the VM.
+- unattached managed disks: an incremental snapshot first (re-checking the disk's uniqueId, and after the snapshot that lastOwnershipUpdateTime and Unattached are unchanged), and the delete only once it has succeeded; rollback makes the disk again from the snapshot with the same name, SKU, size, zone and tags. A disk with a customer-managed key, Azure Disk Encryption, a Trusted Launch or confidential VM security type, or private-link-only access needs a decision (exit 4); Ultra Disk, Premium SSD v2 and shared disks (maxShares > 1) stay review steps.
+- unused Standard public IPs: delete. The address can't be got back: rollback makes a new Standard static IP with the same name, zones and tags, and a different address.
+- empty App Service plans (Linux and Windows): delete; rollback makes the plan again, empty, with the same SKU, worker count, OS and tags, always passing `--is-linux true` or `--is-linux false`, then confirming `properties.reserved` matches.
+- idle PostgreSQL/MySQL flexible servers (not replicas, HA off): stop; rollback starts the server. Azure starts a stopped flexible server again automatically after 7 days, so the stop only saves compute until then; storage stays billed.
+
+Everything else is a review step, and the bundle's README says why for each: a disk kept by a deallocated VM (detaching it changes the VM), an empty load balancer (its frontends, probes and rules can't all be rebuilt the same) or an idle NAT gateway (its subnets would change, and a rebuild needs its public IPs still free), for example.
 
 ### Limits
 
@@ -500,7 +548,7 @@ Preview: each run is compared with the last scan of the same subscription set, a
 
 ## Google Cloud (preview)
 
-Pro and Team can also scan Google Cloud. The report is labelled GCP (preview).
+Pro and Team can also scan Google Cloud. The report is labelled GCP (preview). First-time setup: [docs/gcp.md](docs/gcp.md).
 
 ### What it scans
 
@@ -527,8 +575,25 @@ Pro and Team can also scan Google Cloud. The report is labelled GCP (preview).
 | Idle AlloyDB primaries | Running AlloyDB primaries with covered low CPU and near-zero backends |
 | Idle Bigtable instances | PRODUCTION Bigtable with serve nodes and covered zero server requests |
 | Idle Dataproc clusters | RUNNING Dataproc clusters with covered zero jobs |
+| Old disk snapshots | READY Compute Engine snapshots older than `-snapshot-age` days (default 90) that no snapshot schedule made; priced only when no newer snapshot of the same disk exists, because snapshots are incremental |
+| Idle Cloud SQL MySQL | Running Enterprise Cloud SQL for MySQL with covered low CPU and near-zero connections |
+| Idle Memorystore Redis Standard | Standard (HA) Memorystore Redis without read replicas, with covered near-zero clients and no client commands on the primary |
+| Idle HA VPN tunnels | ESTABLISHED HA VPN tunnels with covered zero traffic, reported only when every tunnel on the gateway is idle |
+| Idle Interconnect VLAN attachments | ACTIVE Dedicated and Partner VLAN attachments with covered zero traffic, reported only when every attachment on the same network in that region is idle |
+| Large Standard buckets without lifecycle | Buckets with at least 1 TiB in Standard storage, Autoclass off and no lifecycle rule that deletes objects or changes their class; cost only (the monthly cost is shown, no saving is counted) |
 
 GCP Recommender ACTIVE recommendations (idle VM/disk/address and machine-type) are read too. When one matches a costhound finding on the same resource, costhound's finding wins and shows Recommender's advice; otherwise they appear as unpriced `gcp-recommender` findings.
+
+### Check your setup
+
+Before the first scan, verify access (read-only; no findings). Works on every plan, including free and no license:
+
+```
+costhound gcp -check -projects <project-id>[,…] -quota-project <project-id>
+costhound gcp -check -projects <project-id> -quota-project <project-id> -json
+```
+
+Exit 0 when access is ready (a NOTE may say your key does not cover the project), 1 when any line is FIX (each FIX names the role or command to run).
 
 ### How to run
 
@@ -537,10 +602,34 @@ After `gcloud auth application-default login` (Pro or Team):
 ```
 costhound gcp -projects <project-id>[,…] -quota-project <project-id>
 costhound gcp -projects <project-id> -quota-project <project-id> -json
+costhound gcp -projects <project-id> -quota-project <project-id> -html report.html
 costhound gcp -projects <project-id> -quota-project <project-id> -out fixes
 ```
 
-`-quota-project` can also come from `$GOOGLE_CLOUD_QUOTA_PROJECT`. Team can use a service account via Application Default Credentials; Pro refuses service accounts and needs your own user login.
+Team automation (same semantics as AWS / Azure):
+
+```
+costhound gcp … -slack-webhook https://hooks.slack.com/...   # or $COSTHOUND_SLACK_WEBHOOK
+costhound gcp … -fail-over 500
+costhound gcp … -fail-on-new
+costhound gcp … -fail-on-unowned 200
+```
+
+| Flag | Default | What it does |
+|---|---|---|
+| `-check` | off | verify access only (no findings); works on every plan, including free and no license |
+| `-html` | | Pro: write the interactive HTML report to this file |
+| `-slack-webhook` | | Team: post a summary to this webhook (also `$COSTHOUND_SLACK_WEBHOOK`) |
+| `-fail-over` | | Team: exit with code 3 when waste is at least this many $/month |
+| `-fail-on-new` | off | Team: exit with code 3 when there is new priced waste since the last run |
+| `-fail-on-unowned` | | Team: exit with code 3 when waste on resources with no owner label is at least this many $/month |
+| `-snapshot-age` | 90 | report snapshots at least this many days old, like the AWS option |
+| `-out` | | write a fix bundle to this new or empty folder |
+| `-concurrency` | 4 | projects scanned at the same time |
+| `-no-history` | off | don't save this run or compare it with the last one |
+| `-history-dir` | | where runs are saved (default: `<config dir>/costhound/runs`) |
+
+`-quota-project` can also come from `$GOOGLE_CLOUD_QUOTA_PROJECT`. Team can use a service account via Application Default Credentials; Pro refuses service accounts and needs your own user login. A failed Slack post warns and does not change the exit code. `-fail-on-new` with `-no-history` or no previous run fails nothing and prints why. Owner labels use the same keys as AWS owner tags (`owner`, `team`, `created-by`, `contact`).
 
 ### Plans
 
@@ -552,15 +641,23 @@ Viewer and Recommender Viewer on each scanned project. costhound only sends GET 
 
 ### Prices
 
-From Google's Cloud Billing Catalog (USD list prices). A dated catalog snapshot (2026-11-25) covers us-central1, us-east1, us-west1, europe-west1, europe-west4, asia-east1 and asia-southeast1. With `$COSTHOUND_GCP_CATALOG_KEY` set, live catalog prices are used for the same SKUs. Other regions and unsupported configurations (other machine families, Cloud SQL Enterprise Plus, multi-region Spanner, unread Cloud Run billing, and similar cases) stay unpriced.
+From Google's Cloud Billing Catalog (USD list prices). A dated catalog snapshot (2026-11-25) covers us-central1, us-east1, us-west1, europe-west1, europe-west4, asia-east1 and asia-southeast1. With `$COSTHOUND_GCP_CATALOG_KEY` set, live catalog prices are used for the same SKUs. Other regions and unsupported configurations (other machine families, Cloud SQL Enterprise Plus, Cloud SQL MySQL shared-core and legacy tiers, multi-region Spanner, unread Cloud Run billing, Dedicated VLAN attachments under 10 Gbps, snapshots that newer snapshots of the same disk may still need, and similar cases) stay unpriced.
 
 ### Fix bundles
 
-`-out` writes `apply.sh` and `rollback.sh` for idle running VMs (stop after live re-checks; rollback starts the VM). Disks, IPs and the rest are review steps. costhound never runs them.
+`-out` writes `apply.sh` and `rollback.sh` for five kinds of finding; costhound never runs them. Every apply.sh re-checks the resource live (the same immutable ID, still running, unattached or unused, with the reported machine type, disk type or size and the same labels), asks first, and changes nothing if anything differs:
+
+- idle running VMs: stop; rollback starts the VM.
+- unattached zonal Persistent Disks (pd-standard, pd-balanced, pd-ssd): a snapshot first (re-checking lastAttachTimestamp and lastDetachTimestamp afterwards, and that the disk is still unattached), and the delete only once it is READY and of this disk; rollback makes the disk again from the snapshot with the same name, type, size, zone and labels. A disk with a Cloud KMS or customer-supplied key needs a decision (exit 4); regional, Hyperdisk and pd-extreme disks stay review steps.
+- unused static external IPv4 addresses, regional or global: release. The address can't be got back: rollback reserves a new one with the same name, region (or global) and tier, then sets labels with `gcloud beta compute addresses update` (if that fails, it prints the labels to add by hand and still finishes).
+- idle Cloud SQL (PostgreSQL and MySQL): stop with `--activation-policy=NEVER`; rollback starts with `--activation-policy=ALWAYS`. Storage stays billed while stopped.
+- idle Dataproc clusters (no secondary workers, no autoscaling): stop; rollback starts the cluster. A stopped cluster still bills its disks.
+
+Everything else is a review step, and the bundle's README says why for each: a disk kept by a stopped VM (detaching it changes the VM) or idle Cloud NAT (its subnets lose outbound access), for example.
 
 ### Limits
 
-Preview.
+Preview: each run is compared with the last scan of the same project set, and the verified-savings ledger records confirmed fixes. `-no-history` skips both.
 
 ## Development
 
