@@ -30,9 +30,13 @@ test:
 e2e: build
 	scripts/e2e-moto.sh
 
-# Opt-in live Azure Retail Prices audit (network). Not part of test/e2e.
+# Opt-in live price audits: Azure Retail Prices, GCP Cloud Billing Catalog, AWS Price List (network). Not part of test/e2e.
+# GCP needs COSTHOUND_GCP_CATALOG_KEY, AWS needs COSTHOUND_AUDIT_AWS_PROFILE; each skips without it.
 price-audit:
 	COSTHOUND_LIVE_PRICES=1 go test -tags pro -run TestLivePriceAudit -count=1 -v ./internal/azure/
+	COSTHOUND_LIVE_PRICES=1 go test -tags pro -run TestLivePriceAudit -count=1 -v ./internal/gcp/
+	COSTHOUND_LIVE_PRICES=1 go test -tags pro -run TestLivePriceAudit -count=1 -v -timeout 45m ./internal/pricing/
+	COSTHOUND_LIVE_PRICES=1 go test -tags pro -run TestLiveLoaderAudit -count=1 -v -timeout 45m ./internal/inventory/
 
 # Cross-compiled official binaries + checksums in dist/.
 release: test
