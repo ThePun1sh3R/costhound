@@ -119,18 +119,48 @@ func verify(args []string, stdout io.Writer) int {
 		p("  run %s: the account's CloudTrail can confirm this run changed nothing (the text report prints the command)\n", sig.RunID)
 	}
 	p("  signed %s, by the signer's clock\n", sig.SignedAt.Format("2006-01-02 15:04 UTC"))
-	var r report.Report
-	if json.Unmarshal(body, &r) == nil && r.Tool == "costhound" {
+	var head struct {
+		Tool            string            `json:"tool"`
+		Cloud           string            `json:"cloud"`
+		SubscriptionIDs []string          `json:"subscription_ids"`
+		ProjectIDs      []string          `json:"project_ids"`
+		Findings        []json.RawMessage `json:"findings"`
+		Meta            struct {
+			Sources []struct {
+				Unjudged bool `json:"unjudged"`
+			} `json:"sources"`
+		} `json:"meta"`
+		Redaction *report.RedactInfo `json:"redaction"`
+	}
+	if json.Unmarshal(body, &head) == nil && head.Tool == "costhound" {
 		p("\nWhat a signature can't tell you: that the scan saw everything, or that a finding is right.\n")
-		p("  This report: %d region(s), %d region(s) blocked, %d call(s) it couldn't make", len(r.Regions), len(r.BlockedRegions), len(r.Skipped))
-		if r.Run != nil {
-			if _, denied, _ := r.Run.Totals(); denied > 0 {
-				p(", %d denied", denied)
+		unread := 0
+		for _, s := range head.Meta.Sources {
+			if s.Unjudged {
+				unread++
 			}
 		}
-		p(".\n")
-		if r.Redaction != nil {
-			p("  It is a redacted copy; the full report's SHA-256 is %s (the file -redact-full saved).\n", r.Redaction.Commitment)
+		switch head.Cloud {
+		case "azure":
+			p("  This Azure report: %d subscription(s), %d unread source(s), %d finding(s).\n",
+				len(head.SubscriptionIDs), unread, len(head.Findings))
+		case "gcp":
+			p("  This GCP report: %d project(s), %d unread source(s), %d finding(s).\n",
+				len(head.ProjectIDs), unread, len(head.Findings))
+		default:
+			var r report.Report
+			if json.Unmarshal(body, &r) == nil {
+				p("  This report: %d region(s), %d region(s) blocked, %d call(s) it couldn't make", len(r.Regions), len(r.BlockedRegions), len(r.Skipped))
+				if r.Run != nil {
+					if _, denied, _ := r.Run.Totals(); denied > 0 {
+						p(", %d denied", denied)
+					}
+				}
+				p(".\n")
+			}
+		}
+		if head.Redaction != nil {
+			p("  It is a redacted copy; the full report's SHA-256 is %s (the file -redact-full saved).\n", head.Redaction.Commitment)
 		}
 	}
 	return 0

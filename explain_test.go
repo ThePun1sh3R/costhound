@@ -36,7 +36,26 @@ func TestExplain(t *testing.T) {
 			t.Errorf("explain output misses %q\n%s", want, s)
 		}
 	}
-	if code := explain([]string{"ch_nope", "-from", p}, &out); code != 1 {
-		t.Error("an unknown ID is exit 1")
+	out.Reset()
+	if code := explain([]string{"ch_nope", "-from", p}, &out); code != 2 {
+		t.Errorf("an unknown ID is exit 2, got %d", code)
+	}
+}
+
+func TestDetectReportKind(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{`{"cloud":"azure","tenant_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","subscription_ids":["11111111-1111-1111-1111-111111111111"]}`, "azure"},
+		{`{"cloud":"gcp","project_ids":["fixture-proj-a"]}`, "gcp"},
+		{`{"account":"111111111111","findings":[]}`, "aws"},
+		{`{"tenant_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","subscription_ids":["11111111-1111-1111-1111-111111111111"]}`, "azure"},
+		{`{"project_ids":["fixture-proj-a"]}`, "gcp"},
+	}
+	for _, tc := range cases {
+		if got := detectReportKind([]byte(tc.raw)); got != tc.want {
+			t.Errorf("detectReportKind(%s) = %q, want %q", tc.raw, got, tc.want)
+		}
 	}
 }

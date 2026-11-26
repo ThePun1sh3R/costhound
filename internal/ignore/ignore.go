@@ -93,16 +93,12 @@ func Load(p string, explicit bool) (*File, error) {
 	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s: %w", p, err)
 	}
-	known := map[string]bool{}
-	for _, c := range checks.All {
-		known[c.ID] = true
-	}
 	for i := range f.Ignore {
 		r := &f.Ignore[i]
 		if r.ID == "" && r.Check == "" {
 			return nil, fmt.Errorf("%s: rule %d needs an id or a check (a rule matching everything is not allowed)", p, i+1)
 		}
-		if r.Check != "" && !known[r.Check] {
+		if r.Check != "" && !knownCheck(r.Check) {
 			return nil, fmt.Errorf("%s: rule %d: no check named %q", p, i+1, r.Check)
 		}
 		if r.Resource != "" {
@@ -191,35 +187,63 @@ func (r Rule) summary() report.AckRule {
 	return report.AckRule{ID: r.ID, Check: r.Check, Resource: r.Resource, Account: r.Account, Region: r.Region, Reason: r.Reason, Owner: r.Owner, Until: r.Until}
 }
 
+// extraChecks holds check IDs registered outside checks.All (Azure/GCP on
+// pro builds). RegisterCheck is safe to call from init.
+var extraChecks = map[string]bool{}
+
+func knownCheck(id string) bool {
+	if extraChecks[id] {
+		return true
+	}
+	for _, c := range checks.All {
+		if c.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // Apply moves acknowledged findings out of the report's findings (and its
 // total) into Acknowledged, and notes expired and unused rules.
 func (f *File) Apply(rep *report.Report, now time.Time) {
 	if f == nil {
 		return
 	}
+	kept, total, acked, expired, unused := f.apply(rep.Findings, now, func(fd checks.Finding) string {
+		if fd.Account != "" {
+			return fd.Account
+		}
+		return rep.Account
+	})
+	rep.Findings, rep.TotalMonthlyUSD = kept, total
+	rep.Acknowledged = append(rep.Acknowledged, acked...)
+	rep.ExpiredAcks = append(rep.ExpiredAcks, expired...)
+	rep.UnusedRules = append(rep.UnusedRules, unused...)
+	rep.IgnoreFile = f.Path
+}
+
+func (f *File) apply(findings []checks.Finding, now time.Time, accountOf func(checks.Finding) string) (kept []checks.Finding, total float64, acked []report.Acknowledged, expired, unused []report.AckRule) {
 	used := make([]bool, len(f.Ignore))
 	expiredSeen := map[int]bool{}
-	var kept []checks.Finding
-	total := 0.0
-	for _, fd := range rep.Findings {
-		acked := false
+	for _, fd := range findings {
+		wasAcked := false
 		for i, r := range f.Ignore {
-			if !r.matches(fd, rep.Account) {
+			if !r.matches(fd, accountOf(fd)) {
 				continue
 			}
 			used[i] = true
 			if !r.until.IsZero() && !now.Before(r.until) {
 				if !expiredSeen[i] {
 					expiredSeen[i] = true
-					rep.ExpiredAcks = append(rep.ExpiredAcks, r.summary())
+					expired = append(expired, r.summary())
 				}
 				continue // expired: the finding comes back
 			}
-			rep.Acknowledged = append(rep.Acknowledged, report.Acknowledged{Finding: fd, Reason: r.Reason, Owner: r.Owner, Until: r.Until})
-			acked = true
+			acked = append(acked, report.Acknowledged{Finding: fd, Reason: r.Reason, Owner: r.Owner, Until: r.Until})
+			wasAcked = true
 			break
 		}
-		if !acked {
+		if !wasAcked {
 			kept = append(kept, fd)
 			if fd.Priced {
 				total += fd.MonthlyUSD
@@ -228,12 +252,11 @@ func (f *File) Apply(rep *report.Report, now time.Time) {
 	}
 	for i, u := range used {
 		if !u {
-			rep.UnusedRules = append(rep.UnusedRules, f.Ignore[i].summary())
+			unused = append(unused, f.Ignore[i].summary())
 		}
 	}
 	if kept == nil {
 		kept = []checks.Finding{}
 	}
-	rep.Findings, rep.TotalMonthlyUSD = kept, total
-	rep.IgnoreFile = f.Path
+	return kept, total, acked, expired, unused
 }

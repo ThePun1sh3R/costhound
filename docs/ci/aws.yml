@@ -1,0 +1,70 @@
+# Copy to .github/workflows/costhound-aws.yml
+# Secrets: COSTHOUND_LICENSE, AWS_ROLE_ARN
+# Optional: COSTHOUND_SLACK_WEBHOOK
+# Role: attach iam-policy.json from this repo. OIDC trust: check this in your setup.
+
+name: costhound AWS
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install costhound
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/ThePun1sh3R/costhound/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Restore history
+        uses: actions/cache/restore@v4
+        with:
+          path: .costhound-runs
+          key: costhound-history-aws-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            costhound-history-aws-
+
+      - name: Scan
+        env:
+          COSTHOUND_LICENSE: ${{ secrets.COSTHOUND_LICENSE }}
+          COSTHOUND_SLACK_WEBHOOK: ${{ secrets.COSTHOUND_SLACK_WEBHOOK }}
+        run: |
+          costhound \
+            -history-dir .costhound-runs \
+            -html report.html \
+            -fail-over 500 \
+            -fail-on-new \
+            -fail-on-unowned 200 \
+            -json > report.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: costhound-aws-report
+          path: |
+            report.html
+            report.json
+          if-no-files-found: ignore
+
+      - name: Save history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .costhound-runs
+          key: costhound-history-aws-${{ github.run_id }}-${{ github.run_attempt }}

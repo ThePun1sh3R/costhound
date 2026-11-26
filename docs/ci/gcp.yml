@@ -1,0 +1,73 @@
+# Copy to .github/workflows/costhound-gcp.yml
+# Secrets: COSTHOUND_LICENSE
+# Vars (or secrets): GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_PROJECTS, GCP_QUOTA_PROJECT
+# Optional: COSTHOUND_SLACK_WEBHOOK
+# WIF pool/provider and SA Viewer + Recommender Viewer: check this in your setup.
+
+name: costhound GCP
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install costhound
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/ThePun1sh3R/costhound/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Restore history
+        uses: actions/cache/restore@v4
+        with:
+          path: .costhound-runs
+          key: costhound-history-gcp-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            costhound-history-gcp-
+
+      - name: Scan
+        env:
+          COSTHOUND_LICENSE: ${{ secrets.COSTHOUND_LICENSE }}
+          COSTHOUND_SLACK_WEBHOOK: ${{ secrets.COSTHOUND_SLACK_WEBHOOK }}
+        run: |
+          costhound gcp \
+            -projects "${{ vars.GCP_PROJECTS }}" \
+            -quota-project "${{ vars.GCP_QUOTA_PROJECT }}" \
+            -history-dir .costhound-runs \
+            -html report.html \
+            -fail-over 500 \
+            -fail-on-new \
+            -fail-on-unowned 200 \
+            -json > report.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: costhound-gcp-report
+          path: |
+            report.html
+            report.json
+          if-no-files-found: ignore
+
+      - name: Save history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .costhound-runs
+          key: costhound-history-gcp-${{ github.run_id }}-${{ github.run_attempt }}

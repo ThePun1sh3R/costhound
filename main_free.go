@@ -24,7 +24,13 @@ import (
 const proOnly = "is in the official costhound release (Pro/Team), not in builds from source"
 const proOnlyPlural = "are in the official costhound release (Pro/Team), not in builds from source"
 
-func run(args []string) int { return runDefault(args) }
+func run(args []string) int {
+	if len(args) > 0 && (args[0] == "azure" || args[0] == "gcp") {
+		fmt.Fprintln(os.Stderr, "costhound: Azure and GCP are Pro/Team features, not in builds from source.")
+		return 2
+	}
+	return runDefault(args)
+}
 
 func mapTerraform(*report.Report, []string) error {
 	return errors.New("Terraform state mapping (-tf-state) " + proOnly)

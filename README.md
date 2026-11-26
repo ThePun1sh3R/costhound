@@ -75,7 +75,7 @@ A license key is checked offline and is tied to the AWS accounts (or AWS Organiz
 
 In the official release, a free scan ends with an invite. `costhound -pro-preview` runs the free scan unchanged, then the Pro checks on the same account, and prints only one line: how many more findings Pro would find and about how much they are worth per month, or "at least" when a Pro read was denied or skipped. It shows no Pro finding details and saves nothing. The Pro checks read CloudWatch metrics, which can cost a few cents. It does nothing on a Pro or Team key, nor in builds from source, and `-org` scans ignore it.
 
-The verified-savings ledger also feeds a monthly report:
+The verified-savings ledger also feeds a monthly report. A finding held back because a read failed, and fixed while that read still fails, is not booked: costhound cannot verify it.
 
 ```
 costhound savings -month YYYY-MM -history-dir DIR -json -html FILE
@@ -93,7 +93,7 @@ One screen of the latest saved scan of every AWS account, Azure subscription set
 
 ## What it checks
 
-`costhound checks` lists every check (cloud, ID, plan, what it finds, pricing, and whether a fix script exists), generated from the code so it cannot go stale. Add `-json` or `-markdown`, and filter with `-cloud` / `-plan`.
+`costhound checks` lists every check (cloud, ID, plan, what it finds, pricing, and whether a fix script exists), generated from the code so it cannot go stale. Add `-json` or `-markdown`, and filter with `-cloud` / `-plan`. The full generated list is in [docs/checks.md](docs/checks.md).
 
 ### Free
 
@@ -221,6 +221,8 @@ One screen of the latest saved scan of every AWS account, Azure subscription set
 | Savings Plans and Reserved Instances to buy | Commitment recommendations, shown separately: rightsize first, then commit |
 | Reserved Instances and Savings Plans about to end | EC2, RDS, ElastiCache, OpenSearch and Redshift reservations and Savings Plans that end within 30 days, or ended within the last 30, unless a renewal is queued for all of it: not waste, but a cliff in next month's bill |
 | Databases idle at the same hours every week | RDS instances and Redshift clusters with no connections in the same stretches of every week (nights, weekends) over the last four weeks, read hour by hour, and busy at other hours: what a stop-and-start schedule saves (instance hours only), with the schedule's commands. Reserved ones are flagged, not priced |
+
+CI gates for GitHub Actions (AWS, Azure, GCP): [docs/ci.md](docs/ci.md).
 
 Every enabled region is scanned in parallel. Regions your account can't use are reported once, not as errors.
 
@@ -357,13 +359,13 @@ The report lists every date in the next 24 months when a resource will cost more
 
 ## Terraform: what's in code, what isn't (Team)
 
-`costhound -tf-state infra/` reads Terraform or OpenTofu state you have locally: a state file, `terraform show -json` output, or a folder of them (for remote state, run `terraform state pull > prod.tfstate` first). Each finding the state manages gets its address. Its fix then says what to change in code, because a CLI change would drift and the next apply would undo it. Fix bundles leave it out, and the report splits the waste: in Terraform (fix it in code) and in none of the state files given. State holds secrets in plain text, so costhound reads only addresses and resource IDs from it, keeps nothing else, and never fetches state itself.
+`costhound -tf-state infra/` (and the same flags on `costhound azure` / `costhound gcp`) reads Terraform or OpenTofu state you have locally: a state file, `terraform show -json` output, or a folder of them (for remote state, run `terraform state pull > prod.tfstate` first). Each finding the state manages gets its address. Its fix then says what to change in code, because a CLI change would drift and the next apply would undo it. Fix bundles leave it out, and the report splits the waste: in Terraform (fix it in code) and in none of the state files given. State holds secrets in plain text, so costhound reads only addresses and resource IDs from it, keeps nothing else, and never fetches state itself.
 
 In CI, `-fail-scope terraform` makes `-fail-over`, `-fail-on-new` and `-fail-on-unowned` count only the waste in the state files given (a repo's own pipeline, which fixes it in its code); `-fail-scope outside` counts only the waste in none of them (what was made by hand).
 
 ## Sharing a report (Pro): -redact
 
-`costhound -redact` prints a copy you can hand to a consultant, an auditor or a vendor. Account IDs, resource IDs and names, ARNs, addresses and owners become tokens keyed with a secret only you hold (`-redact-key`, made on first use): the same resource gets the same token in every report, and nobody without the key can tell what it was. Fix commands, facts and acknowledgement notes are left out. If any collected name or ID would still show, nothing is printed. Names shorter than 4 characters (`dev`, `web`) stay as they are: replacing words that short would garble the text. `-redact-map tokens.json` writes the token list for you to keep. Exact totals and dates can still point to the account.
+`costhound -redact` prints a copy you can hand to a consultant, an auditor or a vendor. Account IDs, resource IDs and names, ARNs, addresses and owners become tokens keyed with a secret only you hold (`-redact-key`, made on first use): the same resource gets the same token in every report, and nobody without the key can tell what it was. Owners, creators and resource names are tokenized whatever their length (`ops`, `vm1`); only short words in free text stay readable. Fix commands, facts and acknowledgement notes are left out. If any collected name or ID would still show, nothing is printed. `-redact-map tokens.json` writes the token list for you to keep. Exact totals and dates can still point to the account.
 
 Use `-redact-full` to save the full report from the same scan. It must be a new file: costhound won't overwrite one. The redacted copy records that file's SHA-256 in `redaction.commitment`. Keep `full.json` private. The two lines below print the same hash, which shows the copy came from that report (on macOS 14 or earlier, use `shasum -a 256 full.json`).
 
@@ -483,6 +485,15 @@ Pro and Team can also scan Azure. The report is labelled Azure (preview). First-
 | Idle Azure AI Search | Paid dedicated services with covered zero SearchQueriesPerSecond and DocumentsProcessedCount; prices SU hours for basic/S1/S2/S3 |
 | Idle Synapse dedicated SQL pools | Online Synapse (and standalone DataWarehouse) pools with covered zero activity; prices DWU-hours; pause stops compute (storage keeps billing) |
 | Idle Container Instances | Running container groups with covered near-zero CPU and zero network; prices Linux Standard/Spot vCPU+memory hours |
+| Unused DDoS Network Protection plans | DDoS Network Protection plans with no associated VNets (or public IPs) visible; prices the Network Protection Plan meter |
+| Empty dedicated hosts | Available dedicated hosts with no virtualMachines listed; prices the host SKU Dedicated Host meter (VMSS placement UNCONFIRMED → medium confidence) |
+| Unused capacity reservations | On-demand capacity reservations with unused units (sku.capacity minus allocated); skips Block, future-dated and shared groups; prices unused units at Linux PAYG |
+| NetApp capacity pools with unallocated space | Auto-QoS pools whose size is well above volume quotas; prices the shrink down to max(min pool, volume sum rounded to 4 TiB); Flexible/StandardZRS unpriced |
+| ExpressRoute gateways with no connections | ExpressRoute virtual network gateways with an empty connections list; prices by gateway SKU; deleting does not touch the circuit |
+| Idle Stream Analytics jobs | Running Cloud jobs with covered zero InputEvents (and heartbeat); prices SU × Standard / Standard V2 tier-0; stop loses window state |
+| Idle Azure Data Explorer clusters | Running clusters with covered zero queries and ingestion; unpriced (markup per-vCore UNCONFIRMED) |
+| Cosmos DB overprovisioned throughput | Manual RU/s far above peak NormalizedRUConsumption; prices the shrink to max(minimumThroughput, peak×1.3); skips serverless/autoscale/free |
+| Idle Analysis Services servers | Running (Succeeded) servers with covered idle metrics; prices by SKU; pausing stops compute (model persistence UNCONFIRMED) |
 
 Azure Advisor Cost recommendations are read too. When one matches a costhound finding on the same resource and charge, costhound's finding wins and shows Advisor's advice; otherwise they appear as unpriced `azure-advisor` findings.
 
@@ -518,6 +529,8 @@ costhound azure … -slack-webhook https://hooks.slack.com/...   # or $COSTHOUND
 costhound azure … -fail-over 500                               # exit 3 when waste is >= $500/mo
 costhound azure … -fail-on-new                                 # exit 3 when priced waste is new since the last run
 costhound azure … -fail-on-unowned 200                         # exit 3 when unowned waste is >= $200/mo
+costhound azure … -tf-state infra/                             # mark findings managed in Terraform/OpenTofu state
+costhound azure … -tf-state prod.tfstate -fail-scope terraform # CI gates count only waste in those state files
 ```
 
 | Flag | Default | What it does |
@@ -528,13 +541,24 @@ costhound azure … -fail-on-unowned 200                         # exit 3 when u
 | `-fail-over` | | Team: exit with code 3 when waste is at least this many $/month |
 | `-fail-on-new` | off | Team: exit with code 3 when there is new priced waste since the last run |
 | `-fail-on-unowned` | | Team: exit with code 3 when waste on resources with no owner tag is at least this many $/month |
+| `-fail-scope` | all | Team, with `-tf-state`: the CI gates count only the waste in those state files (`terraform`) or in none of them (`outside`) |
+| `-tf-state` | | Team: a Terraform/OpenTofu state file, or a folder of them, to mark what is managed in code (repeat for more) |
+| `-ignore-file` | `./.costhound.yaml` | acknowledged findings (same file format as AWS; Azure finding IDs work in it); `none` turns it off |
+| `-min-usd` | 0.50 | hide priced findings under this many dollars a month (the report says how many it hid, by check) |
+| `-no-fix` | off | hide the fix commands |
+| `-redact` | off | Pro: print a shareable copy (tenant, subscription, resource group, ARM IDs, names, addresses and owners become keyed tokens; fix commands are left out) |
+| `-redact-full` | | Pro: with `-redact`, also save the full JSON report to a new file; the redacted copy holds its SHA-256 |
+| `-redact-key` | your config folder | Pro: the key `-redact` uses, made on first use |
+| `-redact-map` | | Pro: with `-redact`, also write token → original to this file |
+| `-sign` | | Pro: also write the JSON report to this file, and its signature to `<file>.sig` |
+| `-sign-key` | your config folder | Pro: the signing key for `-sign` (make it with `costhound keygen`) |
 | `-snapshot-age` | 90 | report managed-disk snapshots older than this many days (must be at least 1) |
 | `-out` | | write a fix bundle to this new or empty folder |
 | `-concurrency` | 4 | subscriptions scanned at the same time |
 | `-no-history` | off | don't save this run or compare it with the last one |
 | `-history-dir` | | where runs are saved (default: `<config dir>/costhound/runs`) |
 
-A failed Slack post warns and does not change the exit code. `-fail-on-new` with `-no-history` or no previous run fails nothing and prints why.
+A failed Slack post warns and does not change the exit code. `-fail-on-new` with `-no-history` or no previous run fails nothing and prints why. Ignored findings leave the totals, the CI gates and Slack, as on AWS.
 
 ### Plans
 
@@ -605,6 +629,16 @@ Pro and Team can also scan Google Cloud. The report is labelled GCP (preview). F
 | Idle Dataflow streaming jobs | RUNNING STREAMING jobs with covered zero throughput; priced from current worker vCPU, memory and disk (Streaming Engine units not priced) |
 | Idle regional LB forwarding rules | Regional external Application LB and regional proxy Network LB forwarding rules with covered zero traffic; unpriced (docs do not say how regional rules bill) |
 | Old custom images | READY project custom images older than `-snapshot-age` (default 90 days); low confidence because no API says whether a template or MIG still uses the image |
+| Unused Compute Engine reservations | READY single-project specific reservations with fewer VMs in use than reserved; skips commitment-attached, auto-deleting, shared, managed-service, placement and future-reservation ones; priced as the unused VMs' vCPU and memory (e2/n1/n2/n2d; GPUs, local SSDs and other families unpriced); review only, released capacity may not come back |
+| Empty sole-tenant nodes | Nodes with no VMs in READY sole-tenant node groups, minus the holdback `MIGRATE_WITHIN_NODE_GROUP` needs; skips groups whose autoscaler keeps them as its minimum; priced as node vCPU and memory plus the sole-tenancy premium |
+| Idle Cloud SQL SQL Server | Like Idle Cloud SQL MySQL, for SQL Server instances; priced as compute plus the SQL Server 2017 license (Express free); other versions, and Standard on 4 or fewer vCPUs, show compute only |
+| Large Artifact Registry repositories without cleanup | Standard repositories of at least 100 GiB with no cleanup policy, or policies only in dry run; cost only: shows the monthly storage cost (free tier not deducted), not a saving |
+| Old machine images | READY machine images older than `-snapshot-age`; low confidence and report only, since machine images are deliberate VM backups; multi-region storage unpriced |
+| Idle Cloud Data Fusion instances | ACTIVE instances older than the metric window with a liveness series and no pipeline runs; low confidence (v2 metrics may be opt-in); priced at the edition hourly rate × 730, Basic minus its 120 free hours a month |
+| Idle Vector Search deployed indexes | Deployed indexes (not the storage tier) with replicas reporting and covered zero queries; priced as shards × replicas × the serving machine's node-hour rate; automatic resources unpriced |
+| Idle Memorystore for Memcached | READY instances whose nodes report uptime but served no operations; unpriced (catalog has M1 and M2 rates; Google does not document which applies) |
+| Idle Dataproc Metastore services | ACTIVE services reporting health with no requests; flagged even with deletion protection on (the fix says to honor it); priced by tier, Metastore 2 by scaling factor |
+| Over-provisioned Hyperdisk performance | One finding per over-provisioned dimension (IOPS, throughput) on Hyperdisk Extreme, Throughput, Balanced and Balanced HA disks on one running VM; targets keep Google's per-size minimums, Balanced IOPS/throughput coupling, 30% headroom and Balanced's free baseline, and need a 20% saving; storage-pool and ML disks skipped |
 
 GCP Recommender ACTIVE recommendations (idle VM/disk/address and machine-type) are read too. When one matches a costhound finding on the same resource, costhound's finding wins and shows Recommender's advice; otherwise they appear as unpriced `gcp-recommender` findings.
 
@@ -637,6 +671,8 @@ costhound gcp … -slack-webhook https://hooks.slack.com/...   # or $COSTHOUND_S
 costhound gcp … -fail-over 500
 costhound gcp … -fail-on-new
 costhound gcp … -fail-on-unowned 200
+costhound gcp … -tf-state infra/                             # mark findings managed in Terraform/OpenTofu state
+costhound gcp … -tf-state prod.tfstate -fail-scope outside   # CI gates count only waste outside those state files
 ```
 
 | Flag | Default | What it does |
@@ -647,13 +683,24 @@ costhound gcp … -fail-on-unowned 200
 | `-fail-over` | | Team: exit with code 3 when waste is at least this many $/month |
 | `-fail-on-new` | off | Team: exit with code 3 when there is new priced waste since the last run |
 | `-fail-on-unowned` | | Team: exit with code 3 when waste on resources with no owner label is at least this many $/month |
+| `-fail-scope` | all | Team, with `-tf-state`: the CI gates count only the waste in those state files (`terraform`) or in none of them (`outside`) |
+| `-tf-state` | | Team: a Terraform/OpenTofu state file, or a folder of them, to mark what is managed in code (repeat for more) |
+| `-ignore-file` | `./.costhound.yaml` | acknowledged findings (same file format as AWS; GCP finding IDs work in it); `none` turns it off |
+| `-min-usd` | 0.50 | hide priced findings under this many dollars a month (the report says how many it hid, by check) |
+| `-no-fix` | off | hide the fix commands |
+| `-redact` | off | Pro: print a shareable copy (project IDs/numbers, resource paths and self links, names, addresses and owners become keyed tokens; fix commands are left out) |
+| `-redact-full` | | Pro: with `-redact`, also save the full JSON report to a new file; the redacted copy holds its SHA-256 |
+| `-redact-key` | your config folder | Pro: the key `-redact` uses, made on first use |
+| `-redact-map` | | Pro: with `-redact`, also write token → original to this file |
+| `-sign` | | Pro: also write the JSON report to this file, and its signature to `<file>.sig` |
+| `-sign-key` | your config folder | Pro: the signing key for `-sign` (make it with `costhound keygen`) |
 | `-snapshot-age` | 90 | report snapshots at least this many days old, like the AWS option |
 | `-out` | | write a fix bundle to this new or empty folder |
 | `-concurrency` | 4 | projects scanned at the same time |
 | `-no-history` | off | don't save this run or compare it with the last one |
 | `-history-dir` | | where runs are saved (default: `<config dir>/costhound/runs`) |
 
-`-quota-project` can also come from `$GOOGLE_CLOUD_QUOTA_PROJECT`. Team can use a service account via Application Default Credentials; Pro refuses service accounts and needs your own user login. A failed Slack post warns and does not change the exit code. `-fail-on-new` with `-no-history` or no previous run fails nothing and prints why. Owner labels use the same keys as AWS owner tags (`owner`, `team`, `created-by`, `contact`).
+`-quota-project` can also come from `$GOOGLE_CLOUD_QUOTA_PROJECT`. Team can use a service account via Application Default Credentials; Pro refuses service accounts and needs your own user login. A failed Slack post warns and does not change the exit code. `-fail-on-new` with `-no-history` or no previous run fails nothing and prints why. Ignored findings leave the totals, the CI gates and Slack, as on AWS. Owner labels use the same keys as AWS owner tags (`owner`, `team`, `created-by`, `contact`).
 
 ### Plans
 
@@ -661,7 +708,7 @@ Pro covers up to 3 slots shared by AWS account IDs, Azure subscription IDs and G
 
 ### Permissions
 
-Viewer and Recommender Viewer on each scanned project. costhound only sends GET requests to Google APIs, from a fixed allowlist, and never reads data inside resources.
+Viewer and Recommender Viewer on each scanned project. costhound only sends GET requests to Google APIs, from a fixed allowlist, and never reads data inside resources. The one exception is Compute Engine's `nodeGroups.listNodes`, a read that Google defines as a POST; costhound sends it with an empty body.
 
 ### Prices
 
