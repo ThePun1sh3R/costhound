@@ -5,7 +5,7 @@ PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 # open-source tree builds without them.
 TAGS ?= pro
 
-.PHONY: build build-free license-tool test e2e release public
+.PHONY: build build-free license-tool test e2e price-audit release public
 
 build:
 	go build -tags "$(TAGS)" -ldflags "$(LDFLAGS)" -o bin/costhound .
@@ -29,6 +29,10 @@ test:
 # Never touches real AWS.
 e2e: build
 	scripts/e2e-moto.sh
+
+# Opt-in live Azure Retail Prices audit (network). Not part of test/e2e.
+price-audit:
+	COSTHOUND_LIVE_PRICES=1 go test -tags pro -run TestLivePriceAudit -count=1 -v ./internal/azure/
 
 # Cross-compiled official binaries + checksums in dist/.
 release: test
