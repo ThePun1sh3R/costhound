@@ -92,13 +92,21 @@ func runDefault(args []string) int {
 	if len(args) > 0 && args[0] == "savings" {
 		return runSavings(args[1:])
 	}
+	if len(args) > 0 && args[0] == "summary" {
+		return runSummary(args[1:])
+	}
+	if len(args) > 0 && args[0] == "checks" {
+		return runChecksList(args[1:])
+	}
 	fs := flag.NewFlagSet("costhound", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "costhound %s: find AWS resources that cost money for nothing (read-only)\n\nUsage: costhound [flags]\n"+
 			"       costhound explain <finding id>    everything costhound knows about one finding\n"+
 			"       costhound buy                     a purchase link with this account's ID already filled in\n"+
+			"       costhound checks                  every check, per cloud and plan (no license needed)\n"+
 			"       costhound plan -out <new folder>  Pro: fix scripts to review and run, with a backup where AWS allows one, and a rollback\n"+
 			"       costhound savings                 Pro/Team: monthly verified-savings report from the ledger\n"+
+			"       costhound summary                 Pro/Team: latest saved scan of every AWS, Azure and GCP scope\n"+
 			"       costhound serve                   Team: local dashboard over saved runs\n"+
 			"       costhound keygen                  make the key that signs your reports (-sign)\n"+
 			"       costhound verify <report.json>    check a signed report, and what its signature proves\n\nFlags:\n", version)

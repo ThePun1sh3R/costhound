@@ -83,7 +83,17 @@ costhound savings -month YYYY-MM -history-dir DIR -json -html FILE
 
 It shows the fixes verified in that month, what they save per month, saved so far this month and since the first fix, the top fixes, and fixes that came back, across the AWS, Azure and GCP history on this machine. `-html` writes a one-page, self-contained summary to share. It needs Pro or Team.
 
+### One view across clouds
+
+```
+costhound summary -history-dir DIR -json -html FILE
+```
+
+One screen of the latest saved scan of every AWS account, Azure subscription set and GCP project set already on this machine: per-cloud and overall totals, the top 10 findings by $/month, scopes whose last scan is older than 7 days, and the verified-savings ledger total. It reads only local history; it does not call the clouds. `-html` writes a self-contained page. It needs Pro or Team.
+
 ## What it checks
+
+`costhound checks` lists every check (cloud, ID, plan, what it finds, pricing, and whether a fix script exists), generated from the code so it cannot go stale. Add `-json` or `-markdown`, and filter with `-cloud` / `-plan`.
 
 ### Free
 
@@ -223,6 +233,7 @@ costhound -regions eu-west-1,us-east-1
 costhound -json > waste.json       # for scripts and spreadsheets
 costhound -no-fix                  # hide the fix commands
 costhound buy                      # purchase link with this account's ID already filled in
+costhound checks                   # every check, per cloud and plan (no license needed)
 ```
 
 Pro and Team:
@@ -231,6 +242,8 @@ Pro and Team:
 costhound -license <key>                     # or save it as costhound/license in your config folder
 costhound -html report.html                  # interactive report: charts, filters, savings calculator, CSV
 costhound plan -out fixes                    # fix bundle: scripts to review, with a backup where AWS allows one and a rollback
+costhound summary                            # latest saved scan of every AWS, Azure and GCP scope (history only)
+costhound savings -month YYYY-MM             # monthly verified-savings report from the ledger
 costhound -org                               # Team: every account of your AWS Organization
 costhound -slack-webhook https://hooks.slack.com/...   # Team: post a summary
 costhound -fail-over 500                     # Team: exit 3 when waste is >= $500/mo (for CI)
@@ -465,6 +478,11 @@ Pro and Team can also scan Azure. The report is labelled Azure (preview). First-
 | Idle paid Windows App Service plans | Paid dedicated Windows plans whose sites show covered idle traffic and low plan CPU |
 | Idle ExpressRoute circuits | Provisioned service-provider circuits with covered zero BitsIn/BitsOut; unpriced (price zone needs peering-location mapping ARM cannot provide) |
 | Large Hot storage without lifecycle | Storage accounts with ≥1 TiB Hot blob data and no lifecycle policy; cost-only (shows Hot spend, does not guess Cool/Cold savings) |
+| Idle Front Door Standard/Premium | Standard_AzureFrontDoor / Premium_AzureFrontDoor profiles with covered zero RequestCount; prices the monthly base fee only |
+| Idle API Management | GA-tier services (Developer/Basic/Standard/Premium and GA v2) with covered zero Requests; prices capacity units |
+| Idle Azure AI Search | Paid dedicated services with covered zero SearchQueriesPerSecond and DocumentsProcessedCount; prices SU hours for basic/S1/S2/S3 |
+| Idle Synapse dedicated SQL pools | Online Synapse (and standalone DataWarehouse) pools with covered zero activity; prices DWU-hours; pause stops compute (storage keeps billing) |
+| Idle Container Instances | Running container groups with covered near-zero CPU and zero network; prices Linux Standard/Spot vCPU+memory hours |
 
 Azure Advisor Cost recommendations are read too. When one matches a costhound finding on the same resource and charge, costhound's finding wins and shows Advisor's advice; otherwise they appear as unpriced `azure-advisor` findings.
 
@@ -532,13 +550,15 @@ From the public Azure Retail Prices API, USD list prices. A missing or ambiguous
 
 ### Fix bundles
 
-`-out` writes `apply.sh` and `rollback.sh` for five kinds of finding; costhound never runs them. Every apply.sh re-checks the resource live (it still exists and is still stopped, unattached, unused, empty or Ready, with the reported size or SKU and the same tags), asks first, and changes nothing if anything differs:
+`-out` writes `apply.sh` and `rollback.sh` for seven kinds of finding; costhound never runs them. Every apply.sh re-checks the resource live (it still exists and is still stopped, unattached, unused, empty, Ready, Online or Running, with the reported size or SKU and the same tags), asks first, and changes nothing if anything differs:
 
 - stopped-but-allocated VMs: deallocate; rollback starts the VM.
 - unattached managed disks: an incremental snapshot first (re-checking the disk's uniqueId, and after the snapshot that lastOwnershipUpdateTime and Unattached are unchanged), and the delete only once it has succeeded; rollback makes the disk again from the snapshot with the same name, SKU, size, zone and tags. A disk with a customer-managed key, Azure Disk Encryption, a Trusted Launch or confidential VM security type, or private-link-only access needs a decision (exit 4); Ultra Disk, Premium SSD v2 and shared disks (maxShares > 1) stay review steps.
 - unused Standard public IPs: delete. The address can't be got back: rollback makes a new Standard static IP with the same name, zones and tags, and a different address.
 - empty App Service plans (Linux and Windows): delete; rollback makes the plan again, empty, with the same SKU, worker count, OS and tags, always passing `--is-linux true` or `--is-linux false`, then confirming `properties.reserved` matches.
 - idle PostgreSQL/MySQL flexible servers (not replicas, HA off): stop; rollback starts the server. Azure starts a stopped flexible server again automatically after 7 days, so the stop only saves compute until then; storage stays billed.
+- idle Synapse dedicated SQL pools (workspace pools and standalone DataWarehouse databases): pause; rollback resumes. Storage keeps billing while paused.
+- idle Container Instances groups: stop; rollback starts. Stopping deallocates the containers (anything not on mounted storage is lost; the group's public IP may change on start).
 
 Everything else is a review step, and the bundle's README says why for each: a disk kept by a deallocated VM (detaching it changes the VM), an empty load balancer (its frontends, probes and rules can't all be rebuilt the same) or an idle NAT gateway (its subnets would change, and a rebuild needs its public IPs still free), for example.
 
@@ -581,6 +601,10 @@ Pro and Team can also scan Google Cloud. The report is labelled GCP (preview). F
 | Idle HA VPN tunnels | ESTABLISHED HA VPN tunnels with covered zero traffic, reported only when every tunnel on the gateway is idle |
 | Idle Interconnect VLAN attachments | ACTIVE Dedicated and Partner VLAN attachments with covered zero traffic, reported only when every attachment on the same network in that region is idle |
 | Large Standard buckets without lifecycle | Buckets with at least 1 TiB in Standard storage, Autoclass off and no lifecycle rule that deletes objects or changes their class; cost only (the monthly cost is shown, no saving is counted) |
+| Idle Vertex AI Workbench instances | ACTIVE Workbench (notebooks v2) instances whose underlying Compute Engine VM shows covered low CPU; priced as VM compute plus the Workbench management fee (e2/n1/n2/n2d); CPU idle is an approximation of Workbench's kernel-activity shutdown |
+| Idle Dataflow streaming jobs | RUNNING STREAMING jobs with covered zero throughput; priced from current worker vCPU, memory and disk (Streaming Engine units not priced) |
+| Idle regional LB forwarding rules | Regional external Application LB and regional proxy Network LB forwarding rules with covered zero traffic; unpriced (docs do not say how regional rules bill) |
+| Old custom images | READY project custom images older than `-snapshot-age` (default 90 days); low confidence because no API says whether a template or MIG still uses the image |
 
 GCP Recommender ACTIVE recommendations (idle VM/disk/address and machine-type) are read too. When one matches a costhound finding on the same resource, costhound's finding wins and shows Recommender's advice; otherwise they appear as unpriced `gcp-recommender` findings.
 
@@ -645,13 +669,14 @@ From Google's Cloud Billing Catalog (USD list prices). A dated catalog snapshot 
 
 ### Fix bundles
 
-`-out` writes `apply.sh` and `rollback.sh` for five kinds of finding; costhound never runs them. Every apply.sh re-checks the resource live (the same immutable ID, still running, unattached or unused, with the reported machine type, disk type or size and the same labels), asks first, and changes nothing if anything differs:
+`-out` writes `apply.sh` and `rollback.sh` for six kinds of finding; costhound never runs them. Every apply.sh re-checks the resource live (the same immutable ID, still running, unattached or unused, with the reported machine type, disk type or size and the same labels), asks first, and changes nothing if anything differs:
 
 - idle running VMs: stop; rollback starts the VM.
 - unattached zonal Persistent Disks (pd-standard, pd-balanced, pd-ssd): a snapshot first (re-checking lastAttachTimestamp and lastDetachTimestamp afterwards, and that the disk is still unattached), and the delete only once it is READY and of this disk; rollback makes the disk again from the snapshot with the same name, type, size, zone and labels. A disk with a Cloud KMS or customer-supplied key needs a decision (exit 4); regional, Hyperdisk and pd-extreme disks stay review steps.
 - unused static external IPv4 addresses, regional or global: release. The address can't be got back: rollback reserves a new one with the same name, region (or global) and tier, then sets labels with `gcloud beta compute addresses update` (if that fails, it prints the labels to add by hand and still finishes).
 - idle Cloud SQL (PostgreSQL and MySQL): stop with `--activation-policy=NEVER`; rollback starts with `--activation-policy=ALWAYS`. Storage stays billed while stopped.
 - idle Dataproc clusters (no secondary workers, no autoscaling): stop; rollback starts the cluster. A stopped cluster still bills its disks.
+- idle Vertex AI Workbench instances: stop; rollback starts the instance. A stopped instance still bills its boot and data disks; Workbench's own idle shutdown can be switched on instead.
 
 Everything else is a review step, and the bundle's README says why for each: a disk kept by a stopped VM (detaching it changes the VM) or idle Cloud NAT (its subnets lose outbound access), for example.
 
