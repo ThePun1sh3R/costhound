@@ -105,7 +105,7 @@ Disks with a Cloud KMS or customer-supplied key need a decision (exit 4). Region
 
 ## 7. Prices
 
-USD list prices from Google's Cloud Billing Catalog. A dated catalog snapshot (2026-11-25) covers us-central1, us-east1, us-west1, europe-west1, europe-west4, asia-east1 and asia-southeast1. With `$COSTHOUND_GCP_CATALOG_KEY` set, live catalog prices are used for the same SKUs. Other regions and unsupported configurations stay unpriced. A missing catalog key is a NOTE in `-check`, not a FIX.
+USD list prices from Google's Cloud Billing Catalog. A dated catalog snapshot (2026-11-27) covers all 48 Compute regions. With `$COSTHOUND_GCP_CATALOG_KEY` set, live catalog prices are used for the same SKUs. A SKU Google doesn't sell in a region, and unsupported configurations, stay unpriced with the reason in the finding. A missing catalog key is a NOTE in `-check`, not a FIX.
 
 ## 8. Privacy
 
