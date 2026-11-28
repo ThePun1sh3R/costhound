@@ -51,22 +51,30 @@ type AutoScalingAPI interface {
 	applicationautoscaling.DescribeScalableTargetsAPIClient
 }
 
+// DDBScaleTarget is one Application Auto Scaling target on a DynamoDB table or index.
+type DDBScaleTarget struct {
+	ResourceID, Dimension string
+	Min, Max              int32
+}
+
 // Table is a DynamoDB table with its provisioned capacity (indexes included).
 type Table struct {
-	Name, Class string
-	Provisioned bool
-	RCU, WCU    int64    // table + every global secondary index
-	Indexes     []string // global secondary index names
-	AutoScaled  bool
-	Created     *time.Time
+	Name, Class  string
+	Provisioned  bool
+	RCU, WCU     int64    // table + every global secondary index
+	Indexes      []string // global secondary index names
+	AutoScaled   bool
+	ScaleTargets []DDBScaleTarget // each auto scaling target (table and indexes)
+	Created      *time.Time
 	// For dynamodb-table-class (DescribeTable updates sizes about every six hours):
-	Bytes        int64      // the table and its global secondary indexes
-	LSIBytes     int64      // its local secondary indexes, which Bytes may already hold
-	Status       string     // ACTIVE, UPDATING, ...
-	Global       bool       // a global table (Replicas or a GlobalTableVersion)
-	ClassChanged *time.Time // when its table class last changed
-	GSIs         []GSI      // each global secondary index (idle-dynamodb-index)
-	Replicas     []string   // a global table's replica regions
+	TableSizeBytes int64      // raw TableSizeBytes from DescribeTable
+	Bytes          int64      // the table and its global secondary indexes
+	LSIBytes       int64      // its local secondary indexes, which Bytes may already hold
+	Status         string     // ACTIVE, UPDATING, ...
+	Global         bool       // a global table (Replicas or a GlobalTableVersion)
+	ClassChanged   *time.Time // when its table class last changed
+	GSIs           []GSI      // each global secondary index (idle-dynamodb-index)
+	Replicas       []string   // a global table's replica regions
 }
 
 // GSI is a global secondary index: its own size, state and provisioned capacity.
@@ -107,12 +115,12 @@ type RecoveryPoint struct {
 
 // FileSystem is an EFS file system.
 type FileSystem struct {
-	ID, Name, ThroughputMode string
-	AvailabilityZoneName     string // set ⇒ One Zone (Regional when empty)
-	MountTargets             int
-	Standard, IA, Archive    int64 // bytes per storage class
-	ProvisionedMiBps         float64
-	Created                  *time.Time
+	ID, Name, ThroughputMode, PerformanceMode string
+	AvailabilityZoneName                      string // set ⇒ One Zone (Regional when empty)
+	MountTargets                              int
+	Standard, IA, Archive                     int64 // bytes per storage class
+	ProvisionedMiBps                          float64
+	Created                                   *time.Time
 }
 
 // Stream is a Kinesis data stream.
@@ -230,8 +238,9 @@ func loadExtras(ctx context.Context, r *Region, c Clients, skip func(string, err
 					continue
 				}
 				fs := FileSystem{ID: aws.ToString(f.FileSystemId), Name: aws.ToString(f.Name), MountTargets: int(f.NumberOfMountTargets),
-					ThroughputMode: string(f.ThroughputMode), AvailabilityZoneName: aws.ToString(f.AvailabilityZoneName),
-					ProvisionedMiBps: aws.ToFloat64(f.ProvisionedThroughputInMibps), Created: f.CreationTime}
+					ThroughputMode: string(f.ThroughputMode), PerformanceMode: string(f.PerformanceMode),
+					AvailabilityZoneName: aws.ToString(f.AvailabilityZoneName),
+					ProvisionedMiBps:     aws.ToFloat64(f.ProvisionedThroughputInMibps), Created: f.CreationTime}
 				if z := f.SizeInBytes; z != nil {
 					fs.Standard, fs.IA, fs.Archive = aws.ToInt64(z.ValueInStandard), aws.ToInt64(z.ValueInIA), aws.ToInt64(z.ValueInArchive)
 					if fs.Standard+fs.IA+fs.Archive == 0 {
@@ -434,15 +443,21 @@ func loadTables(ctx context.Context, r *Region, c DynamoDBAPI, as AutoScalingAPI
 	if len(names) == 0 {
 		return nil
 	}
-	scaled := map[string]bool{}
+	scaled, byTarget := map[string]bool{}, map[string][]DDBScaleTarget{}
 	if as != nil {
 		sp := applicationautoscaling.NewDescribeScalableTargetsPaginator(as, &applicationautoscaling.DescribeScalableTargetsInput{ServiceNamespace: aatypes.ServiceNamespaceDynamodb})
 		if err := drain(ctx, sp.HasMorePages, sp.NextPage, func(o *applicationautoscaling.DescribeScalableTargetsOutput) {
 			for _, t := range o.ScalableTargets {
 				// "table/orders" or "table/orders/index/by-user"
-				parts := strings.Split(aws.ToString(t.ResourceId), "/")
-				if len(parts) >= 2 {
-					scaled[parts[1]] = true
+				id := aws.ToString(t.ResourceId)
+				parts := strings.Split(id, "/")
+				if len(parts) >= 2 && parts[0] == "table" {
+					name := parts[1]
+					scaled[name] = true
+					byTarget[name] = append(byTarget[name], DDBScaleTarget{
+						ResourceID: id, Dimension: string(t.ScalableDimension),
+						Min: aws.ToInt32(t.MinCapacity), Max: aws.ToInt32(t.MaxCapacity),
+					})
 				}
 			}
 		}); err != nil {
@@ -459,8 +474,9 @@ func loadTables(ctx context.Context, r *Region, c DynamoDBAPI, as AutoScalingAPI
 			continue
 		}
 		t := d.Table
-		tb := Table{Name: n, AutoScaled: scaled[n], Created: t.CreationDateTime, Provisioned: true, Status: string(t.TableStatus),
-			Bytes: aws.ToInt64(t.TableSizeBytes), Global: len(t.Replicas) > 0 || aws.ToString(t.GlobalTableVersion) != ""}
+		size := aws.ToInt64(t.TableSizeBytes)
+		tb := Table{Name: n, AutoScaled: scaled[n], ScaleTargets: byTarget[n], Created: t.CreationDateTime, Provisioned: true, Status: string(t.TableStatus),
+			TableSizeBytes: size, Bytes: size, Global: len(t.Replicas) > 0 || aws.ToString(t.GlobalTableVersion) != ""}
 		if t.BillingModeSummary != nil && t.BillingModeSummary.BillingMode == "PAY_PER_REQUEST" {
 			tb.Provisioned = false
 		}

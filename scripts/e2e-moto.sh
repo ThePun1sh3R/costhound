@@ -299,6 +299,20 @@ PCA=$(q acm-pca create-certificate-authority --certificate-authority-type ROOT \
   --tags Key=e2e-age,Value=old --query CertificateAuthorityArn)
 
 echo "running costhound..."
+# Setup check: read-only, no findings, no history; JSON says ready and every probe ran.
+"$BIN" -check -regions $R > .e2e/check.txt 2> /dev/null || { echo "E2E FAIL (aws -check): exit $?"; cat .e2e/check.txt; exit 1; }
+"$BIN" -check -regions $R -json > .e2e/check.json 2> /dev/null
+python3 - <<'PY'
+import json, sys
+r = json.load(open(".e2e/check.json"))
+names = {i["name"]: i["status"] for i in r["items"]}
+bad = [n for n in ("account", "regions", "ec2", "rds", "logs", "s3", "dynamodb") if names.get(n) != "OK"]
+if r["cloud"] != "aws" or not r["ready"] or bad or "FIX" in names.values():
+    print("E2E FAIL (aws -check):", r); sys.exit(1)
+if "Access is ready" not in open(".e2e/check.txt").read():
+    print("E2E FAIL (aws -check): no ready line"); sys.exit(1)
+print(f"E2E PASS (aws -check): ready, {len(r['items'])} items, no FIX")
+PY
 "$BIN" -regions $R -json -snapshot-age 0 -stopped-days 0 -min-log-gib 0 -secret-days 0 -min-usd 0 > .e2e/report.json
 
 python3 - "$VOL" "$SNAP" "$OLD" "$STOPPED" "$EIP" "$NAT_EIP" "$VPC" "$IO1" "$S3IFACE" "$UNUSED_AMI" "$TPL_AMI" "$DHOST" "$KMSKEY" "$KMSON" "$NATGW" "$NATGW2" "$HC" "$HC2" "$IO1MA" "${EMPTYZONE##*/}" "${PRIVZONE##*/}" "${ZONE##*/}" "$MONITORED" "$PCA" <<'PY'
@@ -360,6 +374,7 @@ moto_gaps = {"ec2:DescribeFastSnapshotRestores", "ec2:DescribeImageReferences", 
              "globalaccelerator:ListAccelerators",  # nor Global Accelerator
              "cloudwatch:DescribeAlarms", "route53:ListTrafficPolicyInstances",  # CBOR for CloudWatch; no traffic policies in moto
              "ec2:DescribeCapacityReservations",  # moto answers Capacity Reservation calls with a 500
+             "ecs:DescribeCapacityProviders",  # moto 500s when no names are given (real AWS lists all)
              "kinesis:DescribeAccountSettings",  # moto lacks Kinesis account settings
              "dms:DescribeReplicationConfigs",  # nor DMS Serverless configurations (a 500)
              "fsx:DescribeVolumes",  # moto fsx has create/describe/delete file systems and backups, not volumes
@@ -469,6 +484,7 @@ known = {"cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "cost-optimizatio
          "ec2:DescribeImageReferences", "eks:DescribeClusterVersions", "eks:ListCapabilities", "ec2:DescribeClientVpnEndpoints",
          "network-firewall:ListFirewalls", "cloudwatch:DescribeAlarms", "route53:ListTrafficPolicyInstances", "ec2:DescribeCapacityReservations",
          "lambda:ListProvisionedConcurrencyConfigs",  # moto: 404
+         "elasticmapreduce:GetAutoTerminationPolicy",  # moto: 500 (not implemented)
          "aoss:ListCollectionGroups",  # moto: 500 (no collection groups)
          "dms:DescribeReplicationConfigs",  # no DMS Serverless configurations
          "dms:DescribeReplications",  # no DMS Serverless runtime state
@@ -482,18 +498,24 @@ known = {"cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "cost-optimizatio
          # no reservations in moto (Team: commitments-expiring)
          "ec2:DescribeReservedInstances", "rds:DescribeReservedDBInstances", "elasticache:DescribeReservedCacheNodes",
          "es:DescribeReservedInstances", "redshift:DescribeReservedNodes", "savingsplans:DescribeSavingsPlans",
+         # commitment-underused: unjudged when the reservation lists fail; moto has no Cost Explorer utilization
+         "ce:GetReservationUtilization", "ce:GetSavingsPlansUtilizationDetails",
          # the Go SDK speaks CBOR to MemoryDB too (since v1.43), which moto can't answer
          "memorydb:DescribeClusters",
+         "rds:DescribeDBProxies", "dax:DescribeClusters", "wafv2:ListWebACLs",
          # moto has no Global Accelerator
          "globalaccelerator:ListAccelerators",  # the Go SDK speaks CBOR to Network Firewall too, which moto can't answer  # moto has no Cost Optimization Hub, Price List, AMI references or EKS version table and capabilities
          # Direct Connect: moto has describe_connections; keep as a gap if this build lacks it
          "directconnect:DescribeConnections",
          "bedrock:ListProvisionedModelThroughputs",  # moto Bedrock has no Provisioned Throughput
          "kendra:ListIndices",  # moto has no Kendra backend
+         "cloudhsm:DescribeClusters",  # moto has no CloudHSM v2 backend (404)
          "glue:ListSessions", "glue:GetSession", "glue:GetDevEndpoints",  # moto Glue has no interactive sessions / GetDevEndpoints path used here
          "neptune-graph:ListGraphs", "cassandra:ListKeyspaces",  # moto has neither backend
          # This Moto build has no App Runner or DocumentDB Elastic backend.
-         "apprunner:ListServices", "docdb-elastic:ListClusters"}
+         "apprunner:ListServices", "docdb-elastic:ListClusters",
+         "comprehend:ListEndpoints",  # moto Comprehend has no endpoints API (404)
+         "ecs:DescribeCapacityProviders"}  # moto 500s when no names are given (real AWS lists all)
 other = [x for x in r["skipped"] if x["what"] not in known]
 if other:
     bad.append(f"unexpected skips: {other}")

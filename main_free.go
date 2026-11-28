@@ -100,15 +100,22 @@ func youngZonesOut(_ context.Context, _ aws.Config, _ checks.Options, _ *invento
 func globalIndexes(fs []checks.Finding, _ []string) ([]checks.Finding, []string) { return fs, nil }
 
 // loadPaid: source builds read no usage, prices or commitments.
-func recordOpenSearchDataNodes(*inventory.Region, map[string]inventory.NodeGroup) {}
-func recordRedshiftClusters(*inventory.Region, map[string]inventory.Warehouse)    {}
+func recordOpenSearchDataNodes(*inventory.Region, map[string]inventory.NodeGroup)             {}
+func recordRedshiftClusters(*inventory.Region, map[string]inventory.Warehouse)                {}
+func recordEC2SQLServer(*inventory.Region, map[string]map[string]report.EC2SQLServerInstance) {}
+func recordRDSInstanceClasses(*inventory.Region, map[string]map[string]string)                {}
+func recordAuroraStorageTypes(*inventory.Region, map[string]map[string]string)                {}
+func recordCacheGroupEngines(*inventory.Region, map[string]map[string]string)                 {}
+func recordECSClusterCounts(*inventory.Region, map[string]map[string]int)                     {}
+
+func recordEBSPerformance(*inventory.Region, map[string]map[string]report.EBSVolumePerformance) {}
 
 func loadPaid(context.Context, aws.Config, *inventory.Region, checks.Options, string, *pricing.Client) {
 }
 
 // paidAccount: source builds have no account-wide paid findings.
-func paidAccount(_ context.Context, _ aws.Config, _ settings, _ string, _ []string, findings []checks.Finding, cliffs []checks.Cliff, skipped []inventory.Skip, _ map[string]map[string]string) ([]checks.Finding, []checks.Cliff, []inventory.Skip, []string) {
-	return findings, cliffs, skipped, nil
+func paidAccount(_ context.Context, _ aws.Config, _ settings, _ string, _ []string, findings []checks.Finding, cliffs []checks.Cliff, skipped []inventory.Skip, _ map[string]map[string]string) ([]checks.Finding, []checks.Cliff, []inventory.Skip, []string, int, map[string]string) {
+	return findings, cliffs, skipped, nil, 0, nil
 }
 
 // orgPlans: source builds don't scan Organizations.

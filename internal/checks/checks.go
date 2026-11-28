@@ -65,6 +65,11 @@ type Finding struct {
 	// Members are the instances a finding about a group covers (not in the
 	// report): Cost Optimization Hub may name any of them.
 	Members []string `json:"-"`
+	// EC2MemberSavings holds estimated monthly savings by instance for
+	// overlapping capacity recommendations.
+	EC2MemberSavings map[string]float64 `json:"-"`
+	// EC2ScaleInShare is the fraction of Members a priced scale-in would remove.
+	EC2ScaleInShare float64 `json:"-"`
 	// TFAddress is the Terraform resource that manages it, in the state file
 	// TFState (-tf-state, Team): fix it in code, not with the CLI.
 	TFAddress string `json:"tf_address,omitempty"`
@@ -98,6 +103,8 @@ type Options struct {
 	IdleNATGiB        float64 // NAT gateways that sent less than this in the window are idle
 	MinIngestGiBMonth float64 // log groups ingesting less than this per month aren't listed
 	Creators          bool    // -creators: date the unowned findings for the CloudTrail lookup
+
+	NoCostExplorer bool // -no-cost-explorer: skip Cost Explorer utilization reads (Pro)
 }
 
 // DefaultOptions are the thresholds the CLI starts with.
@@ -114,6 +121,17 @@ type Check struct {
 	Plan  string // the cheapest plan that includes it
 }
 
+const ec2SQLServerOverprovisioned = "ec2-sqlserver-overprovisioned"
+const (
+	ecsClusterOverprovisioned = "ecs-cluster-overprovisioned"
+	fargateX86                = "fargate-x86"
+	emrNoAutoTerm             = "emr-no-auto-termination"
+)
+const ebsProvisionedPerformance = "ebs-provisioned-performance"
+const efsProvisionedThroughput = "efs-provisioned-throughput"
+
+const spotCandidateNonprod = "spot-candidate-nonprod"
+
 // All is every check, in report order. Each plan runs its own checks and
 // those of every cheaper plan.
 var All = []Check{
@@ -124,7 +142,7 @@ var All = []Check{
 	{"gp2-to-gp3", "gp2 volumes that should be gp3", GP2ToGP3, license.PlanFree},
 	{"log-retention", "Log groups that never expire", LogRetention, license.PlanFree},
 	{"idle-load-balancer", "Load balancers with no targets", IdleLoadBalancers, license.PlanFree},
-	{"nat-no-s3-endpoint", "NAT traffic to S3 without the free endpoint", NATWithoutS3Endpoint, license.PlanFree},
+	{"nat-no-s3-endpoint", "VPCs with a NAT gateway and no S3 gateway endpoint", NATWithoutS3Endpoint, license.PlanFree},
 	{"old-instance-type", "Old-generation instance types", OldInstanceTypes, license.PlanFree},
 	{"ec2-graviton", "EC2 instances that could run on Graviton", EC2Graviton, license.PlanFree},
 	{"idle-accelerator", "Global Accelerators that route nothing", IdleAccelerator, license.PlanFree},
@@ -167,18 +185,27 @@ var All = []Check{
 	{"rds-extended-support", "RDS and Aurora on engine versions past standard support", nil, license.PlanPro},
 	{"elasticache-extended-support", "ElastiCache Redis OSS paying for extended support", nil, license.PlanPro},
 	{"idle-dynamodb", "DynamoDB tables with provisioned capacity and no traffic", nil, license.PlanPro},
+	{"dynamodb-stale-ondemand", "On-demand DynamoDB tables unused for 90 days", nil, license.PlanPro},
 	{"idle-dynamodb-index", "DynamoDB indexes nobody reads", nil, license.PlanPro},
 	{"dynamodb-table-class", "DynamoDB tables on the costlier table class", nil, license.PlanPro},
+	{"dynamodb-autoscaling-floor", "DynamoDB auto scaling with a minimum far above use", nil, license.PlanPro},
 	{"quiet-accelerator", "Global Accelerators with no traffic", nil, license.PlanPro},
 	{"lambda-errors", "Lambda functions whose calls keep failing", nil, license.PlanPro},
+	{"lambda-timeouts", "Lambda functions frequently reaching their timeout", nil, license.PlanPro},
 	{"idle-provisioned-concurrency", "Lambda provisioned concurrency nobody uses", nil, license.PlanPro},
 	{"aurora-serverless-pause", "Aurora Serverless v2 clusters that could pause when idle", nil, license.PlanPro},
 	{"idle-ecs-service", "ECS services with running tasks and no load balancer traffic", nil, license.PlanPro},
+	{ecsClusterOverprovisioned, "ECS clusters with excess EC2 container instances (preview)", nil, license.PlanPro},
 	{"fargate-oversized", "Fargate services sized bigger than their busiest task needs", nil, license.PlanPro},
+	{fargateX86, "Fargate services on x86 that could run on Graviton", nil, license.PlanPro},
 	{"elasticache-oversized", "ElastiCache clusters a node size bigger than their peak load needs", nil, license.PlanPro},
+	{"elasticache-redis-to-valkey", "ElastiCache Redis OSS caches that could run Valkey on the same nodes for less", nil, license.PlanPro},
+	{"rds-oversized", "RDS databases a class size bigger than their peak load needs", nil, license.PlanPro},
+	{"rds-piops-to-gp3", "RDS io1 storage that costs less as gp3", nil, license.PlanPro},
 	{"custom-metrics", "CloudWatch custom metrics: where the monitoring bill comes from", nil, license.PlanPro},
 	{"s3-standard-no-tiering", "Large S3 Standard buckets without tiering", nil, license.PlanPro},
 	{"idle-efs", "EFS file systems nobody connects to", nil, license.PlanPro},
+	{efsProvisionedThroughput, "EFS provisioned throughput above measured need", nil, license.PlanPro},
 	{"idle-kinesis", "Kinesis streams with no records", nil, license.PlanPro},
 	{"opensearch-extended-support", "OpenSearch and Elasticsearch domains past standard support", nil, license.PlanPro},
 	{"idle-opensearch", "OpenSearch domains nobody searches or writes to", nil, license.PlanPro},
@@ -200,6 +227,7 @@ var All = []Check{
 	{"stale-synthetics-canary", "Synthetics canaries failing every run", nil, license.PlanPro},
 	{"idle-sagemaker-notebook", "SageMaker notebook instances to review", nil, license.PlanPro},
 	{"idle-kendra-index", "Kendra indexes with no queries", nil, license.PlanPro},
+	{"comprehend-idle-endpoint", "Comprehend real-time endpoints with no requests", nil, license.PlanPro},
 	{"idle-glue-session", "Glue interactive sessions and development endpoints left READY", nil, license.PlanPro},
 	{"opensearch-oversized", "OpenSearch data nodes with room to downsize", nil, license.PlanPro},
 	{"idle-emr-serverless-app", "EMR Serverless applications paying for warm workers with no job runs", nil, license.PlanPro},
@@ -213,20 +241,37 @@ var All = []Check{
 	{"idle-client-vpn", "Client VPN endpoints nobody connects to", nil, license.PlanPro},
 	{"vpn-tunnels-down", "Site-to-Site VPN connections with every tunnel down", nil, license.PlanPro},
 	{"idle-rds", "RDS databases nobody connects to", nil, license.PlanPro},
+	{"idle-rds-replica", "RDS read replicas nobody reads from", nil, license.PlanPro},
 	{"idle-db-cluster", "Aurora, Multi-AZ, DocumentDB and Neptune DB clusters nobody connects to", nil, license.PlanPro},
+	{"aurora-storage-config", "Aurora clusters on the costlier storage configuration", nil, license.PlanPro},
 	{"quiet-classic-lb", "Classic Load Balancers with no traffic", nil, license.PlanPro},
 	{"idle-network-firewall", "Network Firewalls with no traffic", nil, license.PlanPro},
+	{ec2SQLServerOverprovisioned, "EC2 instances overprovisioned for SQL Server", nil, license.PlanPro},
 	{"idle-ec2", "EC2 instances idle every day", nil, license.PlanPro},
+	{spotCandidateNonprod, "Non-production Auto Scaling group or EKS node group running only On-Demand", nil, license.PlanPro},
 	{"quiet-api-cache", "API Gateway caches nothing uses", nil, license.PlanPro},
 	{"idle-attached-ebs", "Disks attached to running instances with no reads or writes", nil, license.PlanPro},
+	{ebsProvisionedPerformance, "EBS volumes with excess provisioned IOPS or throughput", nil, license.PlanPro},
 	{"eks-overrequested", "EKS clusters whose nodes are held by requests pods don't use", nil, license.PlanPro},
 	{"idle-emr", "EMR clusters that did no work", nil, license.PlanPro},
+	{"emr-prev-gen-instances", "EMR clusters running previous-generation instances", nil, license.PlanPro},
+	{emrNoAutoTerm, "EMR clusters with no auto-termination policy", nil, license.PlanPro},
 	{"idle-memorydb", "MemoryDB clusters nobody reads or writes", nil, license.PlanPro},
+	{"idle-rds-proxy", "RDS Proxies with no client connections", nil, license.PlanPro},
+	{"idle-dax", "DAX clusters with no requests", nil, license.PlanPro},
+	{"idle-cloudhsm", "Idle CloudHSM cluster", nil, license.PlanPro},
+	{"idle-mwaa", "Idle Amazon MWAA environment", nil, license.PlanPro},
+	{"redshift-orphan-snapshot", "Redshift manual snapshots of deleted clusters", nil, license.PlanPro},
+	{"waf-unused-web-acl", "WAFv2 web ACLs with nothing attached", nil, license.PlanPro},
+	{"rds-multiaz-nonprod", "Multi-AZ RDS for non-production tags", nil, license.PlanPro},
+	{"burstable-surplus-credits", "Burstable EC2 instances paying surplus CPU credits", nil, license.PlanPro},
+	{"workspace-billing-mode", "WorkSpaces on the wrong billing mode", nil, license.PlanPro},
 	{"log-ingest", "Log groups that ingest the most", nil, license.PlanPro},
 	{"public-ipv4-in-use", "Public IPv4 on resources that may not need it", nil, license.PlanPro},
 	{"idle-endpoint", "Interface and Gateway Load Balancer endpoints with no traffic", nil, license.PlanPro},
 	{"cost-hub", "AWS Cost Optimization Hub: rightsize, idle, Graviton", nil, license.PlanPro},
 	{"compute-optimizer", "AWS Compute Optimizer rightsizing (when the hub is off)", nil, license.PlanPro},
+	{"commitment-underused", "Savings Plans and Reserved Instances paid for but not used", nil, license.PlanPro},
 	{"commitments", "Savings Plans and Reserved Instances to buy", nil, license.PlanTeam},
 	{"commitments-expiring", "Reserved Instances and Savings Plans about to end", nil, license.PlanTeam},
 	{"off-hours", "Databases idle at the same hours every week", nil, license.PlanTeam},
@@ -269,7 +314,11 @@ func Run(r *inventory.Region, o Options) []Finding {
 	for _, c := range All {
 		if c.Run != nil && c.Included(o.Plan) {
 			for _, f := range c.Run(r, o) {
-				out = append(out, withDefaults(f))
+				f = adjustEMRAutoTerm(adjustFargateArch(adjustEMRPrice(withDefaults(f), out), out), out)
+				if f.Check == "" {
+					continue
+				}
+				out = append(out, f)
 			}
 		}
 	}
@@ -309,8 +358,8 @@ var TookOver = map[string]string{"nat-no-routes": "idle-nat"}
 
 // Families group checks that take turns reporting one resource: an attached
 // volume is idle-attached-ebs's while it looks idle (Pro scans), and
-// gp2-to-gp3's or piops-to-gp3's otherwise; a running instance is
-// idle-ec2's while it looks idle, else ec2-graviton's (old-instance-type's
+// gp2-to-gp3, piops-to-gp3 or ebs-provisioned-performance can report it
+// otherwise. A running instance is idle-ec2's while it looks idle, else ec2-graviton's (old-instance-type's
 // families never overlap ec2-graviton's). A move inside a family is neither
 // new nor fixed in the diff and the savings ledger; it's matched by account,
 // region and resource ID (or a finding's own key), not the label, whose Name
@@ -318,10 +367,11 @@ var TookOver = map[string]string{"nat-no-routes": "idle-nat"}
 // when its instance was terminated still costs the same, so leaving the
 // other checks for it is no fix.
 var Families = map[string]string{"gp2-to-gp3": "ebs-volume", "piops-to-gp3": "ebs-volume", "idle-attached-ebs": "ebs-volume", "unattached-ebs": "ebs-volume",
-	"idle-ec2": "ec2-instance", "ec2-graviton": "ec2-instance", "old-instance-type": "ec2-instance",
-	"idle-dynamodb": "dynamodb-table", "dynamodb-table-class": "dynamodb-table",
+	ebsProvisionedPerformance: "ebs-volume",
+	"idle-ec2":                "ec2-instance", "ec2-graviton": "ec2-instance", "old-instance-type": "ec2-instance",
+	"idle-dynamodb": "dynamodb-table", "dynamodb-stale-ondemand": "dynamodb-table", "dynamodb-table-class": "dynamodb-table", "dynamodb-autoscaling-floor": "dynamodb-table",
 	"idle-accelerator": "accelerator", "quiet-accelerator": "accelerator",
-	"idle-db-cluster": "db-cluster", "aurora-serverless-pause": "db-cluster"}
+	"idle-db-cluster": "db-cluster", "aurora-serverless-pause": "db-cluster", "aurora-storage-config": "db-cluster"}
 
 // ParkedWhenStopped: checks that leave a resource alone while its instance is
 // stopped, though it costs the same (idle-attached-ebs judges running
@@ -890,15 +940,6 @@ func NATWithoutS3Endpoint(r *inventory.Region, o Options) []Finding {
 	return out
 }
 
-// oldFamilies maps old instance families to their current replacement.
-var oldFamilies = map[string]string{
-	"t1": "t3", "t2": "t3 (or t4g on ARM)",
-	"m1": "m7i", "m2": "r7i", "m3": "m7i", "m4": "m7i (or m7g on ARM)",
-	"c1": "c7i", "c3": "c7i", "c4": "c7i (or c7g on ARM)",
-	"r3": "r7i", "r4": "r7i (or r7g on ARM)",
-	"i2": "i4i", "d2": "d3", "g2": "g5", "g3": "g5", "p2": "g5", "x1": "x2iedn", "x1e": "x2iedn",
-}
-
 // OldInstanceTypes: old generations are slower, and usually cost more than a
 // current type of the same size. Never priced (a move needs testing); for a
 // plain Linux On-Demand c, m, r or t instance the Detail states what the
@@ -914,9 +955,8 @@ func OldInstanceTypes(r *inventory.Region, o Options) []Finding {
 			continue
 		}
 		t := string(in.InstanceType)
-		family, _, _ := strings.Cut(t, ".")
-		repl, ok := oldFamilies[family]
-		if !ok {
+		repl := pricing.EC2PreviousGeneration(t)
+		if repl == "" {
 			continue
 		}
 		out = append(out, Finding{
@@ -930,7 +970,7 @@ func OldInstanceTypes(r *inventory.Region, o Options) []Finding {
 }
 
 // oldDetail compares an old instance's hourly price with the usual pick
-// (oldFamilies) and the cheapest current x86 type at least as big offered in
+// and the cheapest current x86 type at least as big offered in
 // its zone, all from one source; anything it can't price gets the plain
 // wording, with no price claim.
 func oldDetail(r *inventory.Region, in ec2types.Instance, repl string) string {

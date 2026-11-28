@@ -33,7 +33,7 @@ var refShape = regexp.MustCompile(`^[a-z0-9-]+:([a-z0-9-]+[/:])?[^ /:][^ ]*$`)
 
 func TestFindingsNameTheirResource(t *testing.T) {
 	seen := map[string]bool{}
-	for _, f := range Run(fixture(), teamOpts()) {
+	for _, f := range Run(coverageFixture(), teamOpts()) {
 		_, named := tagRefs[f.Check]
 		named = named || selfTagRef[f.Check]
 		switch {

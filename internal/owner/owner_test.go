@@ -105,6 +105,7 @@ func TestType(t *testing.T) {
 		"ec2:volume/vol-1": "ec2:volume", "logs:log-group:/a/b": "logs:log-group", "redshift:cluster:w": "redshift:cluster",
 		"elasticache:replicationgroup:s": "elasticache:replicationgroup", "secretsmanager:secret:x": "secretsmanager:secret",
 		"kafka:cluster/a/b": "kafka:cluster", "elasticloadbalancing:loadbalancer/app/x/1": "elasticloadbalancing:loadbalancer",
+		"wafv2:regional/webacl/example/id": "wafv2", "wafv2:global/webacl/example/id": "wafv2",
 		"x": "", ":a/b": "", "s3:bucket": "s3", "s3:": "",
 	} {
 		if got := Type(ref); got != want {

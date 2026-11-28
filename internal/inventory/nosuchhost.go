@@ -47,6 +47,7 @@ var serviceLabels = map[string]string{
 	"glue":          "Glue",
 	"workspaces":    "WorkSpaces",
 	"kendra":        "Kendra",
+	"comprehend":    "Comprehend",
 	"lightsail":     "Lightsail",
 	"mwaa":          "MWAA",
 	"proton":        "Proton",

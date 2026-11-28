@@ -26,22 +26,23 @@ const maxFixLines = 3
 
 // Report is one scan.
 type Report struct {
-	Tool            string           `json:"tool"`
-	Version         string           `json:"version"`
-	Plan            string           `json:"plan"` // "free" or "pro"
-	Account         string           `json:"account"`
-	Org             string           `json:"org,omitempty"`     // the AWS Organization, when known
-	OrgHub          bool             `json:"org_hub,omitempty"` // this run read the Organization's Cost Optimization Hub
-	ScannedAt       time.Time        `json:"scanned_at"`
-	Regions         []string         `json:"regions"`
-	TotalMonthlyUSD float64          `json:"total_monthly_usd"`
-	Findings        []checks.Finding `json:"findings"`
-	Skipped         []inventory.Skip `json:"skipped"`
-	BlockedRegions  []Blocked        `json:"blocked_regions"`
-	NotOffered      []NotOffered     `json:"not_offered"`        // services with no endpoint in a reached region
-	Diff            *Diff            `json:"diff,omitempty"`     // paid plans: change since the last saved run
-	Accounts        []AccountResult  `json:"accounts,omitempty"` // Organization scans: one line per account
-	Settings        string           `json:"settings,omitempty"` // the thresholds of this run, to tell real fixes from changed settings
+	Tool              string            `json:"tool"`
+	Version           string            `json:"version"`
+	Plan              string            `json:"plan"` // "free" or "pro"
+	Account           string            `json:"account"`
+	Org               string            `json:"org,omitempty"`                // the AWS Organization, when known
+	OrgHub            bool              `json:"org_hub,omitempty"`            // this run read the Organization's Cost Optimization Hub
+	ActiveCommitments map[string]string `json:"active_commitments,omitempty"` // commitment-underused ledger: finding key -> state
+	ScannedAt         time.Time         `json:"scanned_at"`
+	Regions           []string          `json:"regions"`
+	TotalMonthlyUSD   float64           `json:"total_monthly_usd"`
+	Findings          []checks.Finding  `json:"findings"`
+	Skipped           []inventory.Skip  `json:"skipped"`
+	BlockedRegions    []Blocked         `json:"blocked_regions"`
+	NotOffered        []NotOffered      `json:"not_offered"`        // services with no endpoint in a reached region
+	Diff              *Diff             `json:"diff,omitempty"`     // paid plans: change since the last saved run
+	Accounts          []AccountResult   `json:"accounts,omitempty"` // Organization scans: one line per account
+	Settings          string            `json:"settings,omitempty"` // the thresholds of this run, to tell real fixes from changed settings
 	// Stopped: the instances stopped (or stopping) at this run, as
 	// "<account>|<region>|<id>" (account empty in a one-account report). The
 	// diff uses it to tell a disk left alone while its instance is stopped
@@ -70,20 +71,54 @@ type Report struct {
 	ParkedRedshiftResizes []checks.Finding `json:"parked_redshift_resizes,omitempty"`
 	// RedshiftClusters is this scan's list by ARN, used to verify a resize.
 	RedshiftClusters map[string]inventory.Warehouse `json:"-"`
+	// EC2SQLServerInstances is the complete EC2 observation per account and
+	// region ("<account>|<region>"). Only live instances with a capped,
+	// Enterprise or unknown license operation are recorded by ID.
+	EC2SQLServerInstances map[string]map[string]EC2SQLServerInstance `json:"ec2_sqlserver_instances,omitempty"`
+	// PendingEC2SQLServerResizes carries findings while the fix is unverified.
+	PendingEC2SQLServerResizes []checks.Finding `json:"pending_ec2_sqlserver_resizes,omitempty"`
+	// EBSVolumePerformance holds this scan's volume settings by account, region and volume ID.
+	EBSVolumePerformance map[string]map[string]EBSVolumePerformance `json:"-"`
+	// PendingEBSPerformance carries findings through scans with an unverified fix.
+	PendingEBSPerformance []checks.Finding `json:"pending_ebs_performance,omitempty"`
+	// RDSInstanceClasses records fully listed regions and their DB classes by
+	// resource key. An empty class means the database is mid-change.
+	RDSInstanceClasses map[string]map[string]string `json:"rds_instance_classes,omitempty"`
+	// PendingRDSResizes retain the original estimate until a later listing
+	// verifies the resize or deletion.
+	PendingRDSResizes []checks.Finding `json:"pending_rds_resizes,omitempty"`
+	// AuroraStorageTypes holds fully listed regions and their cluster storage
+	// types by identifier. An empty region map verifies that no cluster exists.
+	AuroraStorageTypes map[string]map[string]string `json:"aurora_storage_types,omitempty"`
+	// PendingAuroraStorageChanges keeps the estimate until a listing verifies the change or deletion.
+	PendingAuroraStorageChanges []checks.Finding `json:"pending_aurora_storage_changes,omitempty"`
+	// SpotASGCounts gives the running Spot count for a fully converted ASG,
+	// -1 for an eligible group with no running members, or zero for other changes.
+	SpotASGCounts          map[string]int   `json:"-"`
+	PendingSpotConversions []checks.Finding `json:"pending_spot_conversions,omitempty"`
+	// ECSClusterCounts is the full cluster list per account and region
+	// ("<account>|<region>"). A count of -1 means the cluster was unreadable.
+	ECSClusterCounts map[string]map[string]int `json:"ecs_cluster_counts,omitempty"`
+	// CacheGroupEngines records a fully listed region's cache group key (the
+	// replication group or cluster ID) to its engine, for elasticache-redis-to-valkey.
+	CacheGroupEngines map[string]map[string]string `json:"cache_group_engines,omitempty"`
+	// PendingECSScaleIns retain the prior estimate while a fix is unverified.
+	PendingECSScaleIns []checks.Finding `json:"pending_ecs_scale_ins,omitempty"`
 	// Unjudged: this run's "|<region>|<check>|<key>" of every resource a
 	// check couldn't judge, the raw list KeepParked bounds. Not saved.
-	Unjudged     []string       `json:"-"`
-	Ledger       *Ledger        `json:"ledger,omitempty"` // paid plans: verified savings so far
-	Hidden       *Hidden        `json:"hidden,omitempty"` // what -min-usd left out, by check
-	IgnoreFile   string         `json:"ignore_file,omitempty"`
-	Acknowledged []Acknowledged `json:"acknowledged,omitempty"` // in .costhound.yaml: listed, not in the total
-	ExpiredAcks  []AckRule      `json:"expired_acknowledgements,omitempty"`
-	UnusedRules  []AckRule      `json:"unused_rules,omitempty"`
-	PriceNote    string         `json:"price_note"`
-	Run          *RunInfo       `json:"run,omitempty"`       // what this run called, to check against CloudTrail
-	Redaction    *RedactInfo    `json:"redaction,omitempty"` // set on a copy made for sharing (-redact)
-	Upcoming     []checks.Cliff `json:"upcoming,omitempty"`  // paid plans: the cost-cliff calendar, by date
-	TFStates     []string       `json:"tf_states,omitempty"` // Terraform state files read (-tf-state)
+	Unjudged     []string        `json:"-"`
+	Ledger       *Ledger         `json:"ledger,omitempty"` // paid plans: verified savings so far
+	Hidden       *Hidden         `json:"hidden,omitempty"` // what -min-usd left out, by check
+	IgnoreFile   string          `json:"ignore_file,omitempty"`
+	Acknowledged []Acknowledged  `json:"acknowledged,omitempty"` // in .costhound.yaml: listed, not in the total
+	ExpiredAcks  []AckRule       `json:"expired_acknowledgements,omitempty"`
+	UnusedRules  []AckRule       `json:"unused_rules,omitempty"`
+	PriceNote    string          `json:"price_note"`
+	Run          *RunInfo        `json:"run,omitempty"`       // what this run called, to check against CloudTrail
+	Redaction    *RedactInfo     `json:"redaction,omitempty"` // set on a copy made for sharing (-redact)
+	Upcoming     []checks.Cliff  `json:"upcoming,omitempty"`  // paid plans: the cost-cliff calendar, by date
+	Options      []checks.Option `json:"options,omitempty"`   // paid plans: cheaper alternatives (estimates, not in the total)
+	TFStates     []string        `json:"tf_states,omitempty"` // Terraform state files read (-tf-state)
 	// ProPreview is the free-plan -pro-preview aggregate only (count and
 	// dollars). Never holds finding details, names or IDs.
 	ProPreview *ProPreview `json:"pro_preview,omitempty"`
@@ -91,6 +126,20 @@ type Report struct {
 	// any -pro-preview Pro scan. Drives the "report below is incomplete" line;
 	// not saved.
 	FreeIncomplete bool `json:"-"`
+}
+
+// EC2SQLServerInstance holds its observed type, default vCPU count (zero
+// when unknown), and the license operation seen in DescribeInstances.
+type EC2SQLServerInstance struct {
+	Type           string `json:"type"`
+	VCPU           int    `json:"vcpu,omitempty"`
+	UsageOperation string `json:"usage_operation,omitempty"`
+}
+
+// EBSVolumePerformance holds the volume's observed provisioned settings.
+// Zero IOPS is unknown. Zero throughput applies to IOPS-only provisioning.
+type EBSVolumePerformance struct {
+	IOPS, Throughput int32
 }
 
 // ProPreview is what -pro-preview adds to a free report: how many more
@@ -105,6 +154,7 @@ type ProPreview struct {
 // New builds a report, dropping priced findings under minUSD (counted in
 // Hidden) and sorting the rest biggest first (unpriced last).
 func New(version, account string, at time.Time, regions []string, findings []checks.Finding, skipped []inventory.Skip, minUSD float64) *Report {
+	findings = adjustSpotOverlap(findings, minUSD)
 	var kept []checks.Finding
 	var total float64
 	var hidden *Hidden
@@ -221,6 +271,7 @@ func (r *Report) Text(w io.Writer, showFix bool) {
 		r.summary(w)
 	}
 	r.writeUpcoming(w)
+	r.writeOptions(w)
 	r.writeAccounts(w)
 	r.writeDiff(w)
 	r.writeLedger(w)
@@ -401,6 +452,8 @@ func acct(f checks.Finding) string {
 	return f.Account + "  "
 }
 
+const ecsScaleInCheck = "ecs-cluster-overprovisioned"
+
 // FindingID is a finding's stable ID: the same resource with the same problem
 // gets the same ID in every run, so it can be acknowledged in .costhound.yaml.
 func FindingID(account string, f checks.Finding) string {
@@ -412,6 +465,13 @@ func FindingID(account string, f checks.Finding) string {
 	case "redshift-oversized":
 		// The same for a cluster: its node type and count when reported.
 		key += "|" + f.Facts["node_type"] + "|" + f.Facts["nodes"]
+	case "rds-oversized":
+		key += "|" + f.Facts["class"]
+	case ecsScaleInCheck:
+		key += "|" + f.Facts["instances"]
+	case "azure-oversized-flexible-server", "azure-oversized-redis":
+		// A further downsize on the same server is a separate repair.
+		key += "|" + strings.ToLower(f.Facts["sku"])
 	}
 	sum := sha256.Sum256([]byte(key))
 	return "ch_" + hex.EncodeToString(sum[:])[:10]
@@ -523,4 +583,57 @@ func PriceNoteFor(sources map[string]string) string {
 	default:
 		return "Prices are each region's on-demand prices from the " + fetched + ", except " + strings.Join(builtin, ", ") + " (built-in us-east-1 list prices)."
 	}
+}
+
+// adjustSpotOverlap prices Spot only for the capacity a priced scale-in
+// keeps, after the Graviton savings already counted on those same members.
+func adjustSpotOverlap(findings []checks.Finding, minUSD float64) []checks.Finding {
+	if !checks.BuildHasPro {
+		return findings
+	}
+	type member struct{ account, region, id string }
+	graviton, removed := map[member]float64{}, map[member]float64{}
+	hidden := underMin(findings, minUSD)
+	for _, f := range findings {
+		if !f.Priced || hidden(f) {
+			continue
+		}
+		if f.Check == "ec2-graviton" {
+			for id, monthly := range f.EC2MemberSavings {
+				graviton[member{f.Account, f.Region, id}] = monthly
+			}
+			continue
+		}
+		if share := f.EC2ScaleInShare; share > 0 {
+			for _, id := range f.Members {
+				m := member{f.Account, f.Region, id}
+				removed[m] = max(removed[m], share)
+			}
+		}
+	}
+	if len(graviton) == 0 && len(removed) == 0 {
+		return findings
+	}
+	for i := range findings {
+		f := &findings[i]
+		if f.Check != "spot-candidate-nonprod" || !f.Priced {
+			continue
+		}
+		var scaledIn, gravitonOverlap float64
+		for _, id := range f.Members {
+			m := member{f.Account, f.Region, id}
+			spot := f.EC2MemberSavings[id]
+			kept := 1 - removed[m]
+			scaledIn += spot * removed[m]
+			gravitonOverlap += min(spot, graviton[m]) * kept
+		}
+		f.MonthlyUSD = max(0, f.MonthlyUSD-scaledIn-gravitonOverlap)
+		if scaledIn > 0 {
+			f.Evidence = append(f.Evidence, fmt.Sprintf("Cluster scale-in already counts the capacity that would be removed. The Spot estimate excludes %s/mo for that capacity.", Money(scaledIn)))
+		}
+		if gravitonOverlap > 0 {
+			f.Evidence = append(f.Evidence, fmt.Sprintf("This report counts only %s/mo of Spot savings beyond the %s/mo already counted by ec2-graviton on the same instances.", Money(f.MonthlyUSD), Money(gravitonOverlap)))
+		}
+	}
+	return findings
 }

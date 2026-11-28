@@ -76,6 +76,7 @@ type TargetIP struct{ IP, VPC string }
 
 // Region is the read-only snapshot of one region.
 type Region struct {
+	spotRegion
 	Name           string
 	Volumes        []ec2types.Volume
 	Instances      []ec2types.Instance

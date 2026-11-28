@@ -63,3 +63,12 @@ func TestEC2CurrentOptions(t *testing.T) {
 		t.Errorf("m2 was memory-optimized: %v", got)
 	}
 }
+
+// ec2-graviton and old-instance-type never judge the same family.
+func TestGravitonAndOldFamiliesDontOverlap(t *testing.T) {
+	for family := range ec2PreviousFamilies {
+		if EC2GravitonFamily(family) {
+			t.Errorf("%s is both old and a Graviton candidate", family)
+		}
+	}
+}

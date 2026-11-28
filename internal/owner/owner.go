@@ -194,6 +194,11 @@ func Type(ref string) string {
 	if !ok || svc == "" || rest == "" {
 		return ""
 	}
+	// WAFv2 puts the scope before the resource type in the ARN. Filter by
+	// service and match the full ref so both regional and global ACLs work.
+	if svc == "wafv2" {
+		return svc
+	}
 	if i := strings.IndexAny(rest, "/:"); i > 0 {
 		return svc + ":" + rest[:i]
 	}

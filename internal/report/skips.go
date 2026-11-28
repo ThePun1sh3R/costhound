@@ -39,6 +39,12 @@ var deniedCodes = map[string]bool{
 	"UnauthorizedOperation": true, // EC2
 }
 
+// IsDeniedCode reports whether code is an AWS permission denial, as used in
+// skip handling (same set as splitSkips).
+func IsDeniedCode(code string) bool {
+	return deniedCodes[code]
+}
+
 // alwaysCalled are free-plan EC2 reads Load always makes in every region. If
 // any of them is missing from that region's skips, the call succeeded and the
 // region was reached — even when the account is empty and there are no findings.

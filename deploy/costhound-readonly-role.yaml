@@ -53,6 +53,7 @@ Resources:
                   - ec2:DescribeRegions
                   - ec2:DescribeVolumes
                   - ec2:DescribeInstances
+                  - ec2:DescribeSpotPriceHistory
                   - ec2:DescribeAddresses
                   - ec2:DescribeSnapshots
                   - ec2:DescribeImages
@@ -61,6 +62,7 @@ Resources:
                   - ec2:DescribeRouteTables
                   - ec2:DescribeVpcEndpoints
                   - logs:DescribeLogGroups
+                  - logs:DescribeSubscriptionFilters
                   - elasticloadbalancing:DescribeLoadBalancers
                   - elasticloadbalancing:DescribeInstanceHealth
                   - elasticloadbalancing:DescribeTags
@@ -104,6 +106,7 @@ Resources:
                   - neptune-graph:GetGraph
                   - neptune-graph:ListTagsForResource
                   - application-autoscaling:DescribeScalableTargets
+                  - application-autoscaling:DescribeScalingPolicies
                   - ec2:DescribeFastSnapshotRestores
                   - backup:ListBackupVaults
                   - backup:ListRecoveryPointsByBackupVault
@@ -138,6 +141,7 @@ Resources:
                   - eks:ListClusters
                   - eks:DescribeCluster
                   - eks:ListNodegroups
+                  - eks:DescribeNodegroup
                   - eks:ListFargateProfiles
                   - eks:ListCapabilities
                   - ec2:DescribeNetworkInterfaces
@@ -205,10 +209,21 @@ Resources:
                   - sagemaker:DescribeNotebookInstance
                   - kendra:ListIndices
                   - kendra:DescribeIndex
+                  - comprehend:ListEndpoints
                   - glue:ListSessions
                   - glue:GetSession
                   - glue:GetDevEndpoints
                   - redshift:DescribeClusters
+                  - redshift:DescribeClusterSnapshots
+                  - rds:DescribeDBProxies
+                  - rds:DescribeDBProxyTargets
+                  - dax:DescribeClusters
+                  - cloudhsm:DescribeClusters
+                  - airflow:ListEnvironments
+                  - airflow:GetEnvironment
+                  - wafv2:ListWebACLs
+                  - wafv2:ListResourcesForWebACL
+                  - wafv2:GetWebACL
                   - redshift:DescribeNodeConfigurationOptions
                   - ec2:DescribeTransitGatewayAttachments
                   - kafka:ListClusters
@@ -219,22 +234,30 @@ Resources:
                   - network-firewall:DescribeFirewall
                   - ec2:DescribeReservedInstances
                   - rds:DescribeReservedDBInstances
+                  - rds:DescribeGlobalClusters
                   - elasticache:DescribeReservedCacheNodes
                   - es:DescribeReservedInstances
                   - redshift:DescribeReservedNodes
                   - savingsplans:DescribeSavingsPlans
+                  - ce:GetReservationUtilization
+                  - ce:GetSavingsPlansUtilizationDetails
                   - elasticmapreduce:ListClusters
+                  - elasticmapreduce:ListInstances
                   - elasticmapreduce:DescribeCluster
+                  - elasticmapreduce:GetAutoTerminationPolicy
                   - elasticmapreduce:ListSteps
                   - memorydb:DescribeClusters
                   - lambda:ListEventSourceMappings
                   - lambda:ListProvisionedConcurrencyConfigs
                   - lambda:GetProvisionedConcurrencyConfig
-                  # ECS service traffic and Fargate sizing.
+                  # ECS service traffic, Fargate sizing and EC2 cluster capacity.
                   - ecs:ListClusters
                   - ecs:ListServices
                   - ecs:DescribeServices
                   - ecs:DescribeTaskDefinition
+                  - ecs:ListContainerInstances
+                  - ecs:DescribeContainerInstances
+                  - ecs:DescribeCapacityProviders
               # Keyspaces authorizes metadata listings on its system keyspaces.
               - Effect: Allow
                 Action:

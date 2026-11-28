@@ -135,6 +135,7 @@ func loadLongTail(ctx context.Context, r *Region, c Clients, skip func(string, e
 				case aws.ToString(g.LaunchConfigurationName) != "":
 					r.ASGLaunch[name] = LaunchSource{Config: aws.ToString(g.LaunchConfigurationName)}
 				}
+				r.recordSpotASG(name, g)
 				for _, lb := range g.LoadBalancerNames {
 					r.addASGLoadBalancer("clb:"+lb, name)
 				}
@@ -367,16 +368,19 @@ func loadKeys(ctx context.Context, r *Region, c KMSAPI) (string, error) {
 
 // DBInstance is an RDS DB instance as the RDS checks need it.
 type DBInstance struct {
-	ID, ARN, ResourceID         string // ResourceID: the DbiResourceId, which a rename keeps
-	Class, Engine, Version      string
-	Status, License             string
-	Cluster                     string // the Aurora or Multi-AZ DB cluster it belongs to, "" if none
-	ReplicaOf                   string // what a read replica replicates from, "" if it isn't one
-	Replicas                    int    // read replicas (instances and clusters) replicating from it
-	MultiAZ, DeletionProtection bool
-	StorageType                 string
-	GiB                         int
-	Created                     *time.Time
+	ID, ARN, ResourceID          string // ResourceID: the DbiResourceId, which a rename keeps
+	Class, Engine, Version       string
+	Status, License              string
+	Cluster                      string // the Aurora or Multi-AZ DB cluster it belongs to, "" if none
+	ReplicaOf                    string // what a read replica replicates from, "" if it isn't one
+	ReplicaOfCluster             bool   // true when ReplicaOf came from ReadReplicaSourceDBClusterIdentifier
+	ReplicaMode                  string // Db2 and Oracle: open-read-only or mounted
+	Replicas                     int    // read replicas (instances and clusters) replicating from it
+	MultiAZ, DeletionProtection  bool
+	StorageType                  string
+	GiB, IOPS, StorageThroughput int // provisioned storage on io1/io2/gp3 (IOPS and MiB/s from DescribeDBInstances)
+	Tags                         map[string]string
+	Created                      *time.Time
 }
 
 // LaunchSource is what launches an Auto Scaling group's instances: a launch
@@ -420,20 +424,30 @@ type DBClusterMember struct {
 func loadDBSnapshots(ctx context.Context, r *Region, c RDSSnapshotAPI) (string, error) {
 	live := map[string]bool{} // "db:name", "cluster:name", and the resource IDs a rename keeps
 	instances := 0            // live DB instances, whose storage sets a free backup allowance
-	var dbs []DBInstance
+	dbs := []DBInstance{}     // a successful empty list is distinct from an unread list
 	ip := rds.NewDescribeDBInstancesPaginator(c, &rds.DescribeDBInstancesInput{})
 	if err := drain(ctx, ip.HasMorePages, ip.NextPage, func(o *rds.DescribeDBInstancesOutput) {
 		for _, d := range o.DBInstances {
 			replicaOf := aws.ToString(d.ReadReplicaSourceDBInstanceIdentifier)
+			replicaCluster := false
 			if replicaOf == "" {
 				replicaOf = aws.ToString(d.ReadReplicaSourceDBClusterIdentifier)
+				replicaCluster = replicaOf != ""
+			}
+			tags := map[string]string{}
+			for _, tag := range d.TagList {
+				if k := aws.ToString(tag.Key); k != "" {
+					tags[k] = aws.ToString(tag.Value)
+				}
 			}
 			dbs = append(dbs, DBInstance{ID: aws.ToString(d.DBInstanceIdentifier), ARN: aws.ToString(d.DBInstanceArn), ResourceID: aws.ToString(d.DbiResourceId),
 				Class: aws.ToString(d.DBInstanceClass), Engine: aws.ToString(d.Engine), Version: aws.ToString(d.EngineVersion),
 				Status: aws.ToString(d.DBInstanceStatus), License: aws.ToString(d.LicenseModel), Cluster: aws.ToString(d.DBClusterIdentifier),
-				ReplicaOf: replicaOf, Replicas: len(d.ReadReplicaDBInstanceIdentifiers) + len(d.ReadReplicaDBClusterIdentifiers),
-				MultiAZ: aws.ToBool(d.MultiAZ), DeletionProtection: aws.ToBool(d.DeletionProtection),
-				StorageType: aws.ToString(d.StorageType), GiB: int(aws.ToInt32(d.AllocatedStorage)), Created: d.InstanceCreateTime})
+				ReplicaOf: replicaOf, ReplicaOfCluster: replicaCluster, ReplicaMode: string(d.ReplicaMode),
+				Replicas: len(d.ReadReplicaDBInstanceIdentifiers) + len(d.ReadReplicaDBClusterIdentifiers),
+				MultiAZ:  aws.ToBool(d.MultiAZ), DeletionProtection: aws.ToBool(d.DeletionProtection),
+				StorageType: aws.ToString(d.StorageType), GiB: int(aws.ToInt32(d.AllocatedStorage)),
+				IOPS: int(aws.ToInt32(d.Iops)), StorageThroughput: int(aws.ToInt32(d.StorageThroughput)), Tags: tags, Created: d.InstanceCreateTime})
 			live["db:"+aws.ToString(d.DBInstanceIdentifier)] = true
 			live["dbi:"+aws.ToString(d.DbiResourceId)] = aws.ToString(d.DbiResourceId) != ""
 			if aws.ToString(d.DBClusterIdentifier) == "" { // cluster members count under their cluster

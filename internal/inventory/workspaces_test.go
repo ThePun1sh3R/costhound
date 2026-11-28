@@ -208,6 +208,38 @@ func TestLoadWorkSpacesBYOLFromDedicatedTenancy(t *testing.T) {
 	}
 }
 
+func TestLoadWorkSpacesAutoStopTimeoutFromProperties(t *testing.T) {
+	c := fakeWorkSpaces{
+		list: func(*workspaces.DescribeWorkspacesInput) (*workspaces.DescribeWorkspacesOutput, error) {
+			return &workspaces.DescribeWorkspacesOutput{Workspaces: []wstypes.Workspace{{
+				WorkspaceId: aws.String("ws-timeout"),
+				WorkspaceProperties: &wstypes.WorkspaceProperties{
+					RunningMode:                         wstypes.RunningModeAlwaysOn,
+					RunningModeAutoStopTimeoutInMinutes: aws.Int32(45),
+				},
+			}}}, nil
+		},
+		status: func(in *workspaces.DescribeWorkspacesConnectionStatusInput) (*workspaces.DescribeWorkspacesConnectionStatusOutput, error) {
+			var out []wstypes.WorkspaceConnectionStatus
+			for _, id := range in.WorkspaceIds {
+				out = append(out, wstypes.WorkspaceConnectionStatus{WorkspaceId: aws.String(id), ConnectionState: wstypes.ConnectionStateDisconnected})
+			}
+			return &workspaces.DescribeWorkspacesConnectionStatusOutput{WorkspacesConnectionStatus: out}, nil
+		},
+		bundles: func(*workspaces.DescribeWorkspaceBundlesInput) (*workspaces.DescribeWorkspaceBundlesOutput, error) {
+			return &workspaces.DescribeWorkspaceBundlesOutput{}, nil
+		},
+		images: func(*workspaces.DescribeWorkspaceImagesInput) (*workspaces.DescribeWorkspaceImagesOutput, error) {
+			return &workspaces.DescribeWorkspaceImagesOutput{}, nil
+		},
+	}
+	r := &Region{}
+	loadWorkSpaces(t.Context(), r, c, func(string, error) {})
+	if r.WorkSpaces.Items[0].AutoStopTimeoutMinutes != 45 {
+		t.Fatalf("timeout: %+v", r.WorkSpaces.Items[0])
+	}
+}
+
 func TestLoadWorkSpacesListFailureLeavesNil(t *testing.T) {
 	c := fakeWorkSpaces{
 		list: func(*workspaces.DescribeWorkspacesInput) (*workspaces.DescribeWorkspacesOutput, error) {

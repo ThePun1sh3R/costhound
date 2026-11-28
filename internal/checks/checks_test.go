@@ -170,7 +170,8 @@ func fixture() *inventory.Region {
 			{Name: "leaky-policy", HasLifecycle: true, UntaggedCount: 1, UntaggedBytes: gib},
 		},
 		Functions: []lambdatypes.FunctionConfiguration{
-			{FunctionName: aws.String("api"), Architectures: []lambdatypes.Architecture{"x86_64"}},
+			{FunctionName: aws.String("api"), Architectures: []lambdatypes.Architecture{"x86_64"}, MemorySize: aws.Int32(512), Timeout: aws.Int32(10),
+				FunctionArn: aws.String("arn:aws:lambda:eu-west-1:123456789012:function:api")},
 			{FunctionName: aws.String("worker"), Architectures: []lambdatypes.Architecture{"arm64"}, MemorySize: aws.Int32(1024), Timeout: aws.Int32(30),
 				FunctionArn: aws.String("arn:aws:lambda:eu-west-1:123456789012:function:worker")},
 			{FunctionName: aws.String("legacy")},
@@ -187,7 +188,7 @@ func fixture() *inventory.Region {
 			{Name: "abandoned", Provisioned: true, RCU: 200, WCU: 200, Created: ago(300)},
 			{Name: "scaled", Provisioned: true, RCU: 500, WCU: 500, AutoScaled: true, Created: ago(300)},
 			{Name: "tiny", Provisioned: true, RCU: 5, WCU: 5, Created: ago(300)},
-			{Name: "ondemand", Created: ago(300)},
+			{Name: "ondemand", Created: ago(300), Status: "ACTIVE", TableSizeBytes: 10 << 30, Bytes: 10 << 30},
 			{Name: "archive", Status: "ACTIVE", Bytes: 500 << 30, Created: ago(300)}, // cold Standard: Standard-IA (Pro)
 			{Name: "events", Status: "ACTIVE", Created: ago(300), Indexes: []string{"by-user", "by-day"},
 				GSIs: []inventory.GSI{{Name: "by-user", Status: "ACTIVE", Bytes: 8 << 30}, {Name: "by-day", Status: "ACTIVE", Bytes: 20 << 30}}},
@@ -330,10 +331,20 @@ func fixture() *inventory.Region {
 	addDXUsageFixture(r)
 	addLightsailUsageFixture(r)
 	addDBClusterUsageFixture(r)
+	addAuroraStorageFixture(r)
 	addECSIdleFixture(r)
+	addECSCapacityFixture(r)
 	addCanaryFixture(r)
 	addRightsizeFixture(r)
+	addRDSResizeFixture(r)
+	addEBSPerformanceFixture(r)
+	addEMRAutoTermFixture(r)
 	addServiceUsageFixture(r)
+	addRoundPFixture(r)
+	addEFSProvisionedThroughputFixture(r)
+	addMultiAZBurstFixture(r)
+	addWorkspaceBillingModeFixture(r)
+	addDDBAutoscaleFloorFixture(r)
 	return r
 }
 
@@ -553,16 +564,58 @@ var addAppStreamFixture = func(*inventory.Region) {}
 var addOSIFixture = func(*inventory.Region) {}
 var addCanaryFixture = func(*inventory.Region) {}
 var addECSIdleFixture = func(*inventory.Region) {}
+var addECSCapacityFixture = func(*inventory.Region) {}
 var addRightsizeFixture = func(*inventory.Region) {}
+var addRDSResizeFixture = func(*inventory.Region) {}
+var addAuroraStorageFixture = func(*inventory.Region) {}
+var addEBSPerformanceFixture = func(*inventory.Region) {}
+var addEMRAutoTermFixture = func(*inventory.Region) {}
 
+// addCoverageFixture adds resources only the every-check coverage tests use:
+// a resource that would change other checks' exact expectations on fixture().
+var addCoverageFixture = func(*inventory.Region) {}
+
+func coverageFixture() *inventory.Region {
+	r := fixture()
+	addCoverageFixture(r)
+	addSpotFixture(r)
+	addValkeyFixture(r)
+	if BuildHasPro {
+		if r.Usage == nil {
+			r.Usage = &inventory.Usage{}
+		}
+		r.Usage.CostExplorer = &inventory.CostExplorerUtilization{
+			WindowStart: "2026-10-28", WindowEnd: "2026-11-27",
+			Reservations: []inventory.RIUtilizationGroup{{
+				Service: "EC2", SubscriptionID: "sub-cov",
+				Attributes:  map[string]string{"InstanceType": "m5.large", "NumberOfInstances": "1"},
+				Utilization: inventory.ReservationUtilization{UtilizationPercent: "50", RICostForUnusedHours: "100"},
+			}},
+		}
+	}
+	return r
+}
+
+var addValkeyFixture = func(*inventory.Region) {}
+
+var addSpotFixture = func(*inventory.Region) {}
 var addOpenSearchSizingFixture = func(*inventory.Region) {}
 var addServiceUsageFixture = func(*inventory.Region) {}
 
+var addRoundPFixture = func(*inventory.Region) {}
+
+var addEFSProvisionedThroughputFixture = func(*inventory.Region) {}
+
+var addMultiAZBurstFixture = func(*inventory.Region) {}
+var addWorkspaceBillingModeFixture = func(*inventory.Region) {}
+
 var addRedshiftSizingFixture = func(*inventory.Region) {}
+
+var addDDBAutoscaleFloorFixture = func(*inventory.Region) {}
 
 func TestRunCoversEveryCheck(t *testing.T) {
 	seen := map[string]bool{}
-	for _, f := range Run(fixture(), teamOpts()) {
+	for _, f := range Run(coverageFixture(), teamOpts()) {
 		seen[f.Check] = true
 	}
 	for _, c := range All {

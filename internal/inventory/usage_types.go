@@ -15,24 +15,49 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/redshift"
 )
 
+// FlowLog is one ACTIVE VPC flow log delivering to a CloudWatch Logs group.
+type FlowLog struct {
+	FlowLogID              string
+	ResourceID             string
+	TrafficType            string
+	LogFormat              string
+	MaxAggregationInterval int32 // 60 or 600 seconds
+}
+
 // Usage is what the paid checks add on top of the inventory: how much each
 // resource was actually used over the last Days days (CloudWatch sums), and
 // the EKS clusters with their support status.
 type Usage struct {
-	Days             int
-	Reservations     []Reservation      // Commitments active, queued, or retired in the last 30 days
-	NatBytes         map[string]float64 // NAT gateway ID -> bytes sent out to destinations
-	LBTraffic        map[string]float64 // LB ARN -> requests (ALB) or new flows (NLB)
-	LogIngest        map[string]float64 // log group name -> bytes ingested
-	EndpointBytes    map[string]float64 // interface or Gateway Load Balancer endpoint ID -> bytes processed
-	APICacheUse      map[string]float64 // REST API ID/stage -> cache hits + misses over the window
-	APIRequests      map[string]float64 // REST API ID/stage -> requests over the window
-	Clusters         []EKSCluster
-	PublicENIs       []ec2types.NetworkInterface // network interfaces holding a public IPv4
-	FlowLogs         map[string][]string         // log group -> the VPC flow logs writing to it ("fl-… (vpc-…)")
-	Databases        []Database                  // RDS and Aurora instances with their engine lifecycle
-	CostHub          *CostHub                    // account-wide; only on the "global" pseudo-region
-	ComputeOptimizer *ComputeOptimizer           // account-wide; only on the "global" pseudo-region (when the hub is off or unread)
+	Days                   int
+	Reservations           []Reservation      // Commitments active, queued, or retired in the last 30 days
+	NatBytes               map[string]float64 // NAT gateway ID -> bytes sent out to destinations
+	NatProcessedBytes      map[string]float64 // NAT gateway ID -> bytes processed both ways over NatOptionDays whole days (Pro: nat-instance option)
+	NatPeak5mBytes         map[string]float64 // NAT gateway ID -> busiest 5 minutes, both directions added up
+	NatBytesCovered        map[string]bool    // NAT gateway had both byte metrics on every day of NatOptionDays
+	NatOptionDays          int                // whole UTC days behind the three maps above
+	KafkaBytesIn           map[string]float64 // MSK cluster name -> bytes in over KafkaOptionDays (Pro: kafka-on-ec2 option)
+	KafkaOptionCovered     map[string]bool    // every broker had BytesInPerSec on every day of KafkaOptionDays
+	KafkaOptionDays        int                // whole UTC days behind the two maps above
+	KafkaBytesOut          map[string]float64 // MSK cluster name -> bytes out over KafkaOptionDays (Pro: msk-serverless option)
+	KafkaServerlessCovered map[string]bool    // msk-serverless metrics complete for every day/hour of KafkaOptionDays
+	KafkaPeakMBpsIn        map[string]float64 // peak client ingress MB/s over the window (Pro: msk-serverless option)
+	KafkaPeakMBpsOut       map[string]float64 // peak client egress MB/s over the window
+	KafkaPeakPartitions    map[string]float64 // highest GlobalPartitionCount daily maximum
+	KafkaStoredGB          map[string]float64 // stored data at replicated size from the last full day (GiB→GB per broker)
+	LBTraffic              map[string]float64 // LB ARN -> requests (ALB) or new flows (NLB)
+	LogIngest              map[string]float64 // log group name -> bytes ingested
+	EndpointBytes          map[string]float64 // interface or Gateway Load Balancer endpoint ID -> bytes processed
+	APICacheUse            map[string]float64 // REST API ID/stage -> cache hits + misses over the window
+	APIRequests            map[string]float64 // REST API ID/stage -> requests over the window
+	Clusters               []EKSCluster
+	PublicENIs             []ec2types.NetworkInterface // network interfaces holding a public IPv4
+	FlowLogs               map[string][]FlowLog        // log group -> VPC flow logs writing to it
+	FlowLogSubFilters      map[string]int              // log group -> subscription filter count (vended groups only)
+	FlowLogSubUnread       map[string]bool             // log group -> subscription filters couldn't be listed
+	Databases              []Database                  // RDS and Aurora instances with their engine lifecycle
+	CostHub                *CostHub                    // account-wide; only on the "global" pseudo-region
+	ComputeOptimizer       *ComputeOptimizer           // account-wide; only on the "global" pseudo-region (when the hub is off or unread)
+	CostExplorer           *CostExplorerUtilization    // account-wide; only on the "global" pseudo-region (Pro commitment-underused)
 
 	CacheExtendedPrices map[string]ExtendedPrice // ElastiCache node type -> extended-support $/node-hour (Price List)
 	TableActivity       map[string]float64       // DynamoDB table -> consumed read+write units over the window (table and indexes)
@@ -70,6 +95,7 @@ type RDSAPI interface {
 	rds.DescribeDBMajorEngineVersionsAPIClient
 	rds.DescribeDBEngineVersionsAPIClient
 	rds.DescribeBlueGreenDeploymentsAPIClient
+	rds.DescribeGlobalClustersAPIClient
 }
 
 // Reservation is a commitment the account bought: a Reserved Instance, a

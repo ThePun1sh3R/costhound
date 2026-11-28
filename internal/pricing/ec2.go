@@ -5,6 +5,20 @@ import (
 	"strings"
 )
 
+var ec2PreviousFamilies = map[string]string{
+	"t1": "t3", "t2": "t3 (or t4g on ARM)",
+	"m1": "m7i", "m2": "r7i", "m3": "m7i", "m4": "m7i (or m7g on ARM)",
+	"c1": "c7i", "c3": "c7i", "c4": "c7i (or c7g on ARM)",
+	"r3": "r7i", "r4": "r7i (or r7g on ARM)",
+	"i2": "i4i", "d2": "d3", "g2": "g5", "g3": "g5", "p2": "g5", "x1": "x2iedn", "x1e": "x2iedn",
+}
+
+// EC2PreviousGeneration returns the suggested replacement family for an older EC2 type.
+func EC2PreviousGeneration(typ string) string {
+	family, _, _ := strings.Cut(typ, ".")
+	return ec2PreviousFamilies[family]
+}
+
 // EC2 returns a type's shape and its us-east-1 Linux On-Demand price, for
 // the types the built-in table keeps (ec2_table.go).
 func EC2(typ string) (EC2Type, bool) {

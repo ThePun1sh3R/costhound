@@ -2,6 +2,13 @@
 
 package inventory
 
+import astypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+
+type spotRegion struct{}
+
+func (*Region) recordSpotASG(string, astypes.AutoScalingGroup) {}
+func (*Region) ObserveSpotASGs(map[string]int)                 {}
+
 // CustomMetricCount: the free plan doesn't count custom metrics.
 func (r *Region) CustomMetricCount() (int, bool) { return 0, false }
 
@@ -17,6 +24,8 @@ type idleServicesTail struct{}
 
 // ecsIdleTail has no usage fields in the free build.
 type ecsIdleTail struct{}
+
+type ecsCapacityTail struct{}
 
 // rightsizeTail has no usage fields in the free build.
 type rightsizeTail struct{}
@@ -42,4 +51,8 @@ type appStreamTail struct{}
 // osiTail has no inventory fields in the free build.
 type osiTail struct{}
 type canaryTail struct{}
+type comprehendTail struct{}
 type serviceUsageTail struct{}
+type roundPTail struct{}
+type efsProvisionedTail struct{}
+type multiAZBurstTail struct{}

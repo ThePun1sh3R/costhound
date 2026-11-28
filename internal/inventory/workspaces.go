@@ -29,6 +29,7 @@ type WorkSpace struct {
 	State, BundleID                             string
 	RunningMode, ComputeType, OS                string
 	RootGiB, UserGiB                            int32
+	AutoStopTimeoutMinutes                      int32 // 0 = offer default (60)
 	Standby                                     bool
 	StatusRead                                  bool
 	ConnectionState                             string
@@ -79,6 +80,7 @@ func loadWorkSpaces(ctx context.Context, r *Region, c WorkSpacesAPI, skip func(s
 				ws.OS = string(props.OperatingSystemName)
 				ws.RootGiB = aws.ToInt32(props.RootVolumeSizeGib)
 				ws.UserGiB = aws.ToInt32(props.UserVolumeSizeGib)
+				ws.AutoStopTimeoutMinutes = aws.ToInt32(props.RunningModeAutoStopTimeoutInMinutes)
 			}
 			items = append(items, ws)
 		}

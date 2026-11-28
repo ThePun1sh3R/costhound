@@ -71,15 +71,16 @@ const (
 	// $0.50/GB flat (Standard); DataProcessingIA-Bytes $0.25/GB.
 	LogsIngestStandardGB = 0.50
 	LogsIngestIAGB       = 0.25
+	// S3 Standard storage (AmazonS3 TimedStorage-ByteHrs, General Purpose, us-east-1).
+	S3StandardGBMonth = 0.023
 	// EKS control plane: $0.10/h in standard support, $0.60/h in extended
 	// support, so extended support adds $0.50/h per cluster.
 	EKSExtendedExtraMonthly = 0.50 * HoursPerMonth
 )
 
-// Vended log ingestion to CloudWatch Logs (AmazonCloudWatch offer
-// 20261119171040, us-east-1, verified 2026-11-24): USE1-VendedLog-Bytes
-// tiers per account-month — 0–10 TiB $0.50/GB, 10–30 TiB $0.25, 30–50 TiB
-// $0.10, above $0.05. Custom PutLogEvents stays flat (LogsIngestStandardGB).
+// Vended log tier edges (AmazonCloudWatch Data Payload; per account-month).
+// Tiered USD/GB values live on pricing.Book (Price List per region; defaults
+// are us-east-1). Custom PutLogEvents stays flat (LogsIngestStandardGB).
 const (
 	VendedLogsTier1GB = 10 * 1024 // 10 TiB
 	VendedLogsTier2GB = 30 * 1024

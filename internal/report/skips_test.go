@@ -70,6 +70,18 @@ func TestDNSStaysSkipWhenNothingInRegionSucceeded(t *testing.T) {
 	}
 }
 
+func TestComprehendNotOffered(t *testing.T) {
+	const op = "comprehend:ListEndpoints"
+	r := New("v", "1", time.Now(), []string{"eu-north-1", "eu-west-1"}, nil, []inventory.Skip{
+		{Region: "eu-north-1", What: op, Error: inventory.NoSuchHost},
+		{Region: "eu-west-1", What: op, Error: "AccessDeniedException"},
+	}, 0)
+	if len(r.NotOffered) != 1 || r.NotOffered[0].Region != "eu-north-1" || strings.Join(r.NotOffered[0].Services, ",") != "Comprehend" ||
+		len(r.Skipped) != 1 || r.Skipped[0].Region != "eu-west-1" {
+		t.Fatalf("not offered = %+v, unread = %+v", r.NotOffered, r.Skipped)
+	}
+}
+
 func TestAccessDeniedAndTimeoutStaySkips(t *testing.T) {
 	skips := []inventory.Skip{
 		{Region: "eu-north-1", What: "apprunner:ListServices", Error: "AccessDenied"},

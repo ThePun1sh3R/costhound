@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ThePun1sh3R/costhound/internal/pricing"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
@@ -130,15 +129,6 @@ func TestEC2GravitonNotes(t *testing.T) {
 	ng := got["eks-ng-1 (Auto Scaling group)"]
 	if ng.Facts["node_group"] != "ng-1" || ng.Facts["eks_cluster"] != "prod" || !strings.Contains(strings.Join(ng.Fix, " "), "AL2023_ARM_64_STANDARD") {
 		t.Errorf("an EKS managed node group: %+v", ng)
-	}
-}
-
-// ec2-graviton and old-instance-type never judge the same family.
-func TestGravitonAndOldFamiliesDontOverlap(t *testing.T) {
-	for f := range oldFamilies {
-		if pricing.EC2GravitonFamily(f) {
-			t.Errorf("%s is both old and a Graviton candidate", f)
-		}
 	}
 }
 

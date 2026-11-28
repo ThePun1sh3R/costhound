@@ -42,7 +42,7 @@ func TestRoleTemplateMatchesPolicy(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("role template actions differ from the managed policies:\n got  %v\n want %v", got, want)
 	}
-	for _, id := range []string{"idle-ecs-service", "idle-emr-serverless-app", "idle-neptune-graph", "keyspaces-provisioned-unused"} {
+	for _, id := range []string{"idle-ecs-service", "ecs-cluster-overprovisioned", "fargate-x86", "idle-emr-serverless-app", "idle-neptune-graph", "keyspaces-provisioned-unused", "emr-prev-gen-instances", "emr-no-auto-termination", "dynamodb-stale-ondemand", "dynamodb-autoscaling-floor", "comprehend-idle-endpoint", "lambda-timeouts", "idle-rds-proxy", "idle-dax", "idle-cloudhsm", "idle-mwaa", "redshift-orphan-snapshot", "waf-unused-web-acl", "rds-multiaz-nonprod", "burstable-surplus-credits", "spot-candidate-nonprod"} {
 		for _, source := range checks.Meta[id].Sources {
 			action := sourceIAMAction(source)
 			if !slices.Contains(want, action) {
@@ -477,7 +477,7 @@ func TestWasteActionsInStrictPolicy(t *testing.T) {
 			actions = append(actions, stmt.Action...)
 		}
 	}
-	for _, id := range []string{"idle-bedrock-provisioned-throughput", "idle-sagemaker-notebook", "stale-synthetics-canary", "idle-glue-session", "idle-kendra-index", "idle-ecs-service", "s3-standard-no-tiering", "idle-emr-serverless-app", "idle-neptune-graph", "keyspaces-provisioned-unused"} {
+	for _, id := range []string{"idle-bedrock-provisioned-throughput", "idle-sagemaker-notebook", "stale-synthetics-canary", "idle-glue-session", "idle-kendra-index", "idle-ecs-service", "ecs-cluster-overprovisioned", "fargate-x86", "s3-standard-no-tiering", "idle-emr-serverless-app", "idle-neptune-graph", "keyspaces-provisioned-unused", "emr-prev-gen-instances", "emr-no-auto-termination", "dynamodb-stale-ondemand", "dynamodb-autoscaling-floor", "idle-rds-proxy", "idle-dax", "idle-cloudhsm", "idle-mwaa", "redshift-orphan-snapshot", "waf-unused-web-acl", "rds-multiaz-nonprod", "burstable-surplus-credits", "spot-candidate-nonprod"} {
 		for _, action := range checks.Meta[id].Sources {
 			if slices.Contains(secretCapableReads, action) {
 				continue

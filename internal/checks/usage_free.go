@@ -31,6 +31,9 @@ func paidEC2Prices(*inventory.Region, []string) (map[string]float64, string, boo
 	return nil, "", false
 }
 
-func gravitonReservation(*inventory.Region, string, Options) (text, id string) { return "", "" }
+func gravitonRegionReservation(*inventory.Region, string, Options) (text, id string) { return "", "" }
 
 func knownMonitoringTier(custom, total int) (price float64, free int) { return monitoringPrice, 10 }
+func adjustEMRPrice(f Finding, _ []Finding) Finding                   { return f }
+func adjustFargateArch(f Finding, _ []Finding) Finding                { return f }
+func adjustEMRAutoTerm(f Finding, _ []Finding) Finding                { return f }

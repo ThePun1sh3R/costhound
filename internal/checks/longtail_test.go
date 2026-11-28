@@ -158,7 +158,7 @@ func withLongTail(r *inventory.Region) *inventory.Region {
 	big.CpuOptions = &ec2types.CpuOptions{CoreCount: aws.Int32(32), ThreadsPerCore: aws.Int32(2)} // 64 vCPUs: the bound is 0.78%
 	bigQuiet.CpuOptions = big.CpuOptions
 	r.Instances = append(r.Instances, running("i-nightly", "m7i.large", "RunInstances", 90), running("i-behind-lb", "m7i.large", "RunInstances", 90), cr,
-		ipTarget, ipTwin, big, bigQuiet)
+		ipTarget, ipTwin, big, bigQuiet, running("i-sql", "m5.24xlarge", "RunInstances:0006", 90))
 	// Disks for idle-attached-ebs: an idle data disk (found), a busy one, the
 	// root disk, and a disk of an EMR node (EMR's, left to idle-emr).
 	data, emrNode := running("i-data", "m7i.large", "RunInstances", 90), running("i-emr-core", "m5.xlarge", "RunInstances", 90)
@@ -263,14 +263,16 @@ func tailUsage() inventory.Tail {
 		return inventory.NodeGroup{Role: "data", Type: typ, Count: n}
 	}
 	return inventory.Tail{
-		DDBPrice:     ddbTestPrices(),
-		IndexReads:   map[string]float64{"events/by-user": 4e6, "events/by-day": 0},
-		IndexWrites:  map[string]float64{"events/by-user": 9e6, "events/by-day": 9e6},
-		IndexSince:   map[string]bool{"events/by-user": true, "events/by-day": true},
-		TableReports: map[string]bool{"events": true},
-		DDBReads:     map[string]float64{"archive": 1e6},
-		DDBWrites:    map[string]float64{"archive": 1e5},
-		LambdaErrors: map[string]float64{"worker": 2e5}, LambdaInvocations: map[string]float64{"worker": 1e6},
+		DDBPrice:         ddbTestPrices(),
+		DDBStaleActivity: map[string]float64{"ondemand": 0},
+		IndexReads:       map[string]float64{"events/by-user": 4e6, "events/by-day": 0},
+		IndexWrites:      map[string]float64{"events/by-user": 9e6, "events/by-day": 9e6},
+		IndexSince:       map[string]bool{"events/by-user": true, "events/by-day": true},
+		TableReports:     map[string]bool{"events": true},
+		DDBReads:         map[string]float64{"archive": 1e6},
+		DDBWrites:        map[string]float64{"archive": 1e5},
+		LambdaErrors:     map[string]float64{"worker": 2e5}, LambdaInvocations: map[string]float64{"worker": 1e6, "api": 1000},
+		LambdaDurationP90: map[string]float64{"api": 10000},
 		// worker:live keeps 10 warm and never needs more than 2 at once.
 		PCConfigs: []inventory.PCConfig{{Function: "worker", Qualifier: "live", ARN: "arn:aws:lambda:eu-west-1:123456789012:function:worker:live",
 			Allocated: 10, Requested: 10, Status: "READY", Modified: *ago(60)}},
@@ -285,7 +287,7 @@ func tailUsage() inventory.Tail {
 		AOSS: &inventory.AOSS{GroupsRead: true, IndexingOCUHour: 0.24, SearchOCUHour: 0.24, Groups: []inventory.AOSSGroup{{ID: "ng0", Name: "ng-empty", Generation: "NEXTGEN",
 			Created: *ago(400), MinIndexing: 2, MaxIndexing: 96, MinSearch: 2, MaxSearch: 96, NowIndexing: -1, NowSearch: -1}}},
 		LambdaDurationSum: map[string]float64{"worker": 1.5e9}, LambdaDurationMax: map[string]float64{"worker": 30000},
-		LambdaPCInvocations: map[string]float64{"worker": 0}, LambdaAsync: map[string]float64{"worker": 0}, LambdaRecentErrors: map[string]float64{"worker": 3e4},
+		LambdaPCInvocations: map[string]float64{"worker": 0, "api": 0}, LambdaAsync: map[string]float64{"worker": 0}, LambdaRecentErrors: map[string]float64{"worker": 3e4},
 		ECSServices: []inventory.ECSService{{ARN: "arn:aws:ecs:eu-west-1:123456789012:service/prod/web", Name: "web", Cluster: "prod", Status: "ACTIVE", LaunchType: "FARGATE",
 			Desired: 4, Running: 4, TaskDef: "arn:aws:ecs:eu-west-1:123456789012:task-definition/web:3", Deployments: 1, PrimarySince: ago(60), Controller: "ECS", Created: ago(61)}},
 		ECSTaskSizes: map[string]inventory.ECSTaskSize{"arn:aws:ecs:eu-west-1:123456789012:task-definition/web:3": {CPU: 2048, MemMiB: 8192, Fargate: true}},
@@ -336,10 +338,12 @@ func tailUsage() inventory.Tail {
 		MemDBConns:    map[string]float64{"sessions-mdb": 3},
 		MemDBHour:     map[string]float64{"sessions-mdb": 0.2163},
 		EMRClusters:   []inventory.EMRCluster{{ID: "j-1ABC", Name: "nightly-etl", State: "WAITING", Created: ago(60), Apps: []string{"Spark", "Hive"}}},
-		EMRIdle:       map[string]float64{"j-1ABC": 14 * 288},
-		EMRSamples:    map[string]float64{"j-1ABC": 14 * 288},
-		EMRHDFS:       map[string]float64{"j-1ABC": 2},
-		EMRAutoIdle:   map[string]float64{"j-1ABC": 0}, EMRAutoSamples: map[string]float64{"j-1ABC": 0},
+		EMRCompute: []inventory.EMRCompute{{ID: "j-2DEF", Name: "older-etl", State: "RUNNING",
+			Running: map[inventory.EMRNodeType]int{{Type: "m4.large", OnDemand: true}: 1}}},
+		EMRIdle:     map[string]float64{"j-1ABC": 14 * 288},
+		EMRSamples:  map[string]float64{"j-1ABC": 14 * 288},
+		EMRHDFS:     map[string]float64{"j-1ABC": 2},
+		EMRAutoIdle: map[string]float64{"j-1ABC": 0}, EMRAutoSamples: map[string]float64{"j-1ABC": 0},
 		EMRFee: map[string]float64{"m5.xlarge": 0.048},
 		EBSOps: map[string]float64{"vol-idle-data": 0, "vol-busy-data": 4200, "vol-data-root": 0, "vol-emr-hdfs": 0},
 		EC2CPU: map[string]float64{"i-idle": 0.7, "i-idle-win": 1.2, "i-busy": 35, "i-chatty": 0.5, "i-spot": 0.1, "i-asg": 0.1, "i-karpenter": 0.1, "i-operated": 0.1, "i-young": 0.1, "i-silent": 0.1,
@@ -353,6 +357,12 @@ func tailUsage() inventory.Tail {
 		EC2NetOut: map[string]float64{"i-idle": 2e6, "i-idle-win": 1e6, "i-busy": 1e6, "i-chatty": 1e6, "i-spot": 1e5, "i-asg": 1e5, "i-karpenter": 1e5, "i-operated": 1e5, "i-young": 1e5, "i-silent": 1e5,
 			"i-nightly": 1e6, "i-behind-lb": 1e6, "i-cr": 1e6, "i-by-ip": 1e6, "i-same-ip": 1e6, "i-big": 1e6, "i-big-quiet": 1e6},
 		EC2Hour: map[string]float64{"i-idle": 0.0832, "i-behind-lb": 0.1008, "i-emr-core": 0.192, "i-eks-node": 0.0816},
+		EC2SQLServer: map[string]inventory.EC2SQLServerSizing{
+			"i-sql": {
+				Current: inventory.EC2SQLServerPrice{VCPU: 96, Hour: 12},
+				Target:  inventory.EC2SQLServerPrice{VCPU: 48, Hour: 6}, TargetType: "m5.12xlarge",
+			},
+		},
 		// selfmanaged's pods request 80% of its node's CPU and use a quarter of that.
 		EKSFit: map[string]*inventory.EKSFit{"selfmanaged": func() *inventory.EKSFit {
 			f := &inventory.EKSFit{NodesNow: 1}

@@ -594,8 +594,8 @@ func TestLoadDBInstances(t *testing.T) {
 	if p.ARN == "" || p.ResourceID != "db-P" || p.Class != "db.m4.large" || p.Version != "8.0.36" || !p.MultiAZ || !p.DeletionProtection || p.GiB != 100 || p.Replicas != 2 || p.License != "general-public-license" {
 		t.Errorf("primary: %+v", p)
 	}
-	if r.DBInstances[1].ReplicaOf != "primary" || r.DBInstances[2].ReplicaOf != "aurora-src" {
-		t.Errorf("a replica of an instance or of a cluster: %+v", r.DBInstances[1:])
+	if r1, r2 := r.DBInstances[1], r.DBInstances[2]; r1.ReplicaOf != "primary" || r1.ReplicaOfCluster || r2.ReplicaOf != "aurora-src" || !r2.ReplicaOfCluster {
+		t.Errorf("a replica of an instance or of a cluster: %+v %+v", r1, r2)
 	}
 }
 

@@ -48,17 +48,24 @@ func LinuxOnDemand(in ec2types.Instance, region string) bool {
 // not run by an AWS service (EKS Auto Mode), Karpenter, a fleet, EMR,
 // Beanstalk or Batch, and of a family costhound compares with Graviton.
 func GravitonCandidate(in ec2types.Instance, region string) bool {
-	if !LinuxOnDemand(in, region) || (in.Operator != nil && aws.ToBool(in.Operator.Managed)) {
+	if !LinuxOnDemand(in, region) || managedGravitonInstance(in) {
 		return false
+	}
+	family, _, _ := strings.Cut(string(in.InstanceType), ".")
+	return pricing.EC2GravitonFamily(family)
+}
+
+func managedGravitonInstance(in ec2types.Instance) bool {
+	if in.Operator != nil && aws.ToBool(in.Operator.Managed) {
+		return true
 	}
 	for _, tg := range in.Tags {
 		k := aws.ToString(tg.Key)
 		if slices.Contains(gravitonSkipTags, k) || strings.HasPrefix(k, "karpenter.sh/") || strings.HasPrefix(k, "karpenter.k8s.aws/") {
-			return false
+			return true
 		}
 	}
-	family, _, _ := strings.Cut(string(in.InstanceType), ".")
-	return pricing.EC2GravitonFamily(family)
+	return false
 }
 
 // compareWith lists the types an instance is compared with: its Graviton

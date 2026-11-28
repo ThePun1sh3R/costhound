@@ -147,7 +147,14 @@ func gravitonFinding(r *inventory.Region, o Options, moves []gravitonMove, asg s
 		f.MonthlyUSD += (m.now - m.then) * float64(k) * pricing.HoursPerMonth
 		froms, tos = append(froms, m.typ), append(tos, m.twin)
 		for _, in := range m.members {
-			ids = append(ids, aws.ToString(in.InstanceId))
+			id := aws.ToString(in.InstanceId)
+			ids = append(ids, id)
+			if asg != "" && BuildHasPro {
+				if f.EC2MemberSavings == nil {
+					f.EC2MemberSavings = map[string]float64{}
+				}
+				f.EC2MemberSavings[id] = (m.now - m.then) * pricing.HoursPerMonth
+			}
 		}
 		family, _, _ := strings.Cut(m.typ, ".")
 		if !slices.Contains(families, family) {
@@ -212,7 +219,7 @@ func gravitonFinding(r *inventory.Region, o Options, moves []gravitonMove, asg s
 	}
 	var ris []string
 	for _, family := range families {
-		if text, id := gravitonReservation(r, family, o); text != "" {
+		if text, id := gravitonRegionReservation(r, family, o); text != "" {
 			whys, ris = append(whys, text), append(ris, id)
 		}
 	}

@@ -10,24 +10,38 @@ type Book struct {
 	Region string `json:"region"`
 	Source string `json:"source"` // where these prices come from, for the report
 
-	EBSGB             map[string]float64 `json:"ebs_gb_month"` // gp2 gp3 io1 io2 st1 sc1 standard
-	GP3IOPS           float64            `json:"gp3_iops_month"`
-	GP3Throughput     float64            `json:"gp3_mibps_month"`
-	IO1IOPS           float64            `json:"io1_iops_month"`
-	IO2IOPS           [3]float64         `json:"io2_iops_month_tiers"` // up to 32k / 32-64k / above
-	SnapshotGB        float64            `json:"snapshot_gb_month"`
-	SnapshotArchiveGB float64            `json:"snapshot_archive_gb_month"`
-	NATHour           float64            `json:"nat_hour"`
-	LBHour            map[string]float64 `json:"lb_hour"` // application network gateway classic
-	IPv4Hour          float64            `json:"ipv4_hour"`
-	EndpointHour      float64            `json:"endpoint_az_hour"`
-	GWLBEndpointHour  float64            `json:"gwlb_endpoint_hour"`
-	APICacheHour      map[string]float64 `json:"apigw_cache_hour"` // API Gateway cache size as the Price List names it ("0.5GB") -> $ an hour
-	LogsStorageGB     float64            `json:"logs_storage_gb_month"`
-	LogsIngestGB      float64            `json:"logs_ingest_gb"`
-	LogsIngestIAGB    float64            `json:"logs_ingest_ia_gb"`
-	AlarmMonth        float64            `json:"alarm_month"`          // a standard-resolution CloudWatch alarm
-	HighResAlarmMonth float64            `json:"alarm_high_res_month"` // a high-resolution one
+	EBSGB                       map[string]float64 `json:"ebs_gb_month"` // gp2 gp3 io1 io2 st1 sc1 standard
+	GP3IOPS                     float64            `json:"gp3_iops_month"`
+	GP3Throughput               float64            `json:"gp3_mibps_month"`
+	IO1IOPS                     float64            `json:"io1_iops_month"`
+	IO2IOPS                     [3]float64         `json:"io2_iops_month_tiers"` // up to 32k / 32-64k / above
+	SnapshotGB                  float64            `json:"snapshot_gb_month"`
+	SnapshotArchiveGB           float64            `json:"snapshot_archive_gb_month"`
+	NATHour                     float64            `json:"nat_hour"`
+	NATGB                       float64            `json:"nat_gb"`                          // data processed per GB
+	MSKStorageGBMonth           float64            `json:"msk_storage_gb_month"`            // provisioned MSK broker EBS per GB-month
+	MSKServerlessClusterHour    float64            `json:"msk_serverless_cluster_hour"`     // KafkaServerless-ClusterHours
+	MSKServerlessPartitionHour  float64            `json:"msk_serverless_partition_hour"`   // KafkaServerless-PartitionHours
+	MSKServerlessInGB           float64            `json:"msk_serverless_in_gb"`            // KafkaServerless-In-Bytes
+	MSKServerlessOutGB          float64            `json:"msk_serverless_out_gb"`           // KafkaServerless-Out-Bytes
+	MSKServerlessStorageGBMonth float64            `json:"msk_serverless_storage_gb_month"` // KafkaServerless-StorageHours
+	// The five MSKServerless rates have no built-in value: a region the Price
+	// List did not answer for keeps them at 0, and the msk-serverless option
+	// then makes no claim.
+	InterAZGB             float64            `json:"inter_az_gb"` // cross-AZ data transfer per GB per direction
+	LBHour                map[string]float64 `json:"lb_hour"`     // application network gateway classic
+	IPv4Hour              float64            `json:"ipv4_hour"`
+	EndpointHour          float64            `json:"endpoint_az_hour"`
+	GWLBEndpointHour      float64            `json:"gwlb_endpoint_hour"`
+	APICacheHour          map[string]float64 `json:"apigw_cache_hour"` // API Gateway cache size as the Price List names it ("0.5GB") -> $ an hour
+	LogsStorageGB         float64            `json:"logs_storage_gb_month"`
+	LogsIngestGB          float64            `json:"logs_ingest_gb"`
+	LogsIngestIAGB        float64            `json:"logs_ingest_ia_gb"`
+	S3StandardGBMonth     float64            `json:"s3_standard_gb_month"`
+	VendedLogsIngestTiers []GBTier           `json:"vended_logs_ingest_tiers,omitempty"`
+	VendedLogsS3Tiers     []GBTier           `json:"vended_logs_s3_tiers,omitempty"`
+	AlarmMonth            float64            `json:"alarm_month"`          // a standard-resolution CloudWatch alarm
+	HighResAlarmMonth     float64            `json:"alarm_high_res_month"` // a high-resolution one
 }
 
 // BuiltInSource names the built-in prices in reports.
@@ -40,13 +54,17 @@ func Default() *Book {
 		EBSGB:   map[string]float64{"gp2": GP2GBMonth, "gp3": GP3GBMonth, "io1": IO1GBMonth, "io2": IO2GBMonth, "st1": ST1GBMonth, "sc1": SC1GBMonth, "standard": StandardGBMonth},
 		GP3IOPS: GP3IOPSMonth, GP3Throughput: GP3ThroughputMonth, IO1IOPS: IO1IOPSMonth, IO2IOPS: [3]float64{0.065, 0.0455, 0.03185},
 		SnapshotGB: SnapshotGBMonth, SnapshotArchiveGB: SnapshotArchiveGBMonth,
-		NATHour: 0.045, LBHour: map[string]float64{"application": 0.0225, "network": 0.0225, "gateway": 0.0125, "classic": 0.025},
+		NATHour: 0.045, NATGB: 0.045, MSKStorageGBMonth: 0.10, InterAZGB: 0.01,
+		LBHour:   map[string]float64{"application": 0.0225, "network": 0.0225, "gateway": 0.0125, "classic": 0.025},
 		IPv4Hour: 0.005, EndpointHour: 0.01, GWLBEndpointHour: 0.01,
 		// AmazonApiGateway offer, us-east-1, 2026-11-12.
 		APICacheHour: map[string]float64{"0.5GB": 0.02, "1.55GB": 0.038, "6.05GB": 0.20, "13.5GB": 0.25, "28.4GB": 0.50,
 			"58.2GB": 1.00, "118GB": 1.90, "237GB": 3.80},
 		LogsStorageGB: LogsStoredGBMonth, LogsIngestGB: LogsIngestStandardGB, LogsIngestIAGB: LogsIngestIAGB,
-		AlarmMonth: CWAlarmMonth, HighResAlarmMonth: CWHighResAlarmMonth,
+		S3StandardGBMonth:     S3StandardGBMonth,
+		VendedLogsIngestTiers: DefaultVendedLogsIngestTiers(),
+		VendedLogsS3Tiers:     DefaultVendedLogsS3EgressTiers(),
+		AlarmMonth:            CWAlarmMonth, HighResAlarmMonth: CWHighResAlarmMonth,
 	}
 }
 

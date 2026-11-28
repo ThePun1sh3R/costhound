@@ -29,6 +29,10 @@ import (
 // points: a series with no data can't tell idle from a wrong dimension, so
 // the checks judge only what is reporting.
 type Tail struct {
+	EC2SQLServer map[string]EC2SQLServerSizing // instance ID -> live SQL Server vCPU counts and prices
+
+	EBSPerformance map[string]EBSPerformance // volume ID -> complete, unthrottled daily peaks
+
 	migrationTail
 	lightsailTail
 	mqTail
@@ -37,12 +41,17 @@ type Tail struct {
 	appStreamTail
 	osiTail
 	canaryTail
+	comprehendTail
 	serviceUsageTail
+	roundPTail
+	efsProvisionedTail
+	multiAZBurstTail
 	fsxTail
 	dxTail
 	idleServicesTail
 	ecsIdleTail
-	rightsizeTail                     // elasticache-oversized Pro: Price List ladder, peaks, reservations
+	ecsCapacityTail
+	rightsizeTail                     // ElastiCache and RDS Pro: class ladders, peaks, reservations
 	workspacesTail                    // unused-workspace Pro: CloudWatch age and AmazonWorkSpaces User prices
 	EKSFit         map[string]*EKSFit // EKS cluster -> Container Insights requests and use, hour by hour
 	Domains        []Domain
@@ -82,6 +91,7 @@ type Tail struct {
 	EBSOps                    map[string]float64            // attached data volume -> read + write operations over the window
 	Window                    int                           // the usage window in days the series were read over
 	EMRClusters               []EMRCluster
+	EMRCompute                []EMRCompute
 	EMRIdle                   map[string]float64 // EMR cluster -> IsIdle summed over the window (1 per idle 5-minute check)
 	EMRSamples                map[string]float64 // EMR cluster -> IsIdle checks over the window
 	EMRAutoIdle               map[string]float64 // EMR cluster -> AutoTerminationIsClusterIdle summed (with an auto-termination policy only)
@@ -96,8 +106,9 @@ type Tail struct {
 	EC2NetIn                  map[string]float64    // EC2 instance -> highest daily NetworkIn bytes
 	EC2NetOut                 map[string]float64    // EC2 instance -> highest daily NetworkOut bytes
 	EC2Hour                   map[string]float64    // idle-looking EC2 instance -> its On-Demand $/hour for its billing code (Price List)
-	EC2TypeHour               map[string]float64    // ec2-graviton, old-instance-type: instance type -> the region's Linux On-Demand $/hour (Price List)
+	EC2TypeHour               map[string]float64    // EC2, EMR and ECS checks: instance type -> the region's Linux On-Demand $/hour (Price List)
 	DDBReads, DDBWrites       map[string]float64    // dynamodb-table-class: on-demand table -> read / write units consumed over the window (with its global secondary indexes)
+	DDBStaleActivity          map[string]float64    // on-demand table -> read + write units in the fixed 90-day window
 	DDBProvRead, DDBProvWrite map[string]float64    // auto-scaled provisioned table -> its mean provisioned RCU / WCU over the window (with its indexes)
 	DDBPrice                  map[string]float64    // DynamoDB usage type without the region's prefix -> $ per unit (Price List)
 	ddbProvRaw                map[string]float64    // "table|metric|series" -> the sum of its daily averages
@@ -107,6 +118,7 @@ type Tail struct {
 	// on provisioned concurrency, asynchronous events, and errors in the last
 	// 3 days. A missing key is a series that wasn't read.
 	LambdaErrors, LambdaInvocations, LambdaDurationSum, LambdaDurationMax map[string]float64
+	LambdaDurationP90                                                     map[string]float64 // function -> a single p90 (ms) over the window
 	LambdaPCInvocations, LambdaAsync, LambdaRecentErrors                  map[string]float64
 	LambdaSources                                                         map[string]LambdaSource // function ARN -> what triggers it
 	LambdaSourcesUnread                                                   bool                    // lambda:ListEventSourceMappings failed: the triggers are unknown
@@ -150,6 +162,42 @@ type Tail struct {
 	KafkaGBMonth    float64            // MSK broker storage $/GB-month
 	ClientVPNHour   float64            // Client VPN $ per subnet-association hour (0 = built-in)
 	PCAMonthly      map[string]float64 // CA-month price by usage mode (GENERAL_PURPOSE, SHORT_LIVED_CERTIFICATE); nil = not read
+
+	AuroraStorageUse    map[string]AuroraStorageUse // cluster ID -> complete volume metrics
+	AuroraStoragePrices AuroraStoragePrices
+
+	RDSPIOPSToGP3Use    map[string]RDSPIOPSToGP3Use // DB instance ID -> io1 peak load over the usage window
+	RDSPIOPSToGP3Prices RDSPIOPSToGP3Prices
+}
+
+// AuroraStorageUse holds a cluster's volume metrics from the full usage window.
+type AuroraStorageUse struct {
+	DailyIO float64 // mean daily read + write requests over the full window
+	Bytes   float64 // latest daily maximum of VolumeBytesUsed
+}
+
+// AuroraPricePair holds the two regional list rates for one type of usage.
+type AuroraPricePair struct{ Standard, Optimized float64 }
+
+// RDSPIOPSToGP3Use holds peak RDS storage load for an io1 instance over a full usage window.
+type RDSPIOPSToGP3Use struct {
+	PeakIOPS  float64 // upper bound: max ReadIOPS plus max WriteIOPS
+	PeakMiBps float64 // max ReadThroughput plus max WriteThroughput, in MiB/s
+}
+
+// RDSPIOPSToGP3Prices holds AmazonRDS list prices for io1 and gp3 DB storage in one region.
+type RDSPIOPSToGP3Prices struct {
+	PIOPSStorageGB, PIOPSPerIOPS                        float64
+	GP3StorageGB, GP3PerIOPS, GP3PerThroughput          float64
+	MAZPIOPSStorageGB, MAZPIOPSPerIOPS                  float64
+	MAZGP3StorageGB, MAZGP3PerIOPS, MAZGP3PerThroughput float64
+}
+
+// AuroraStoragePrices holds the rates needed to compare a region's Aurora clusters.
+type AuroraStoragePrices struct {
+	StorageGBMonth AuroraPricePair
+	PerIO          float64
+	InstanceHour   map[[2]string]AuroraPricePair // engine and instance class
 }
 
 // DBClusterMemberUse is one cluster member's idle-db-cluster CloudWatch proof.
@@ -360,6 +408,12 @@ type SageMakerAPI interface {
 // RedshiftAPI is the Redshift call the paid checks use.
 type RedshiftAPI interface {
 	redshift.DescribeClustersAPIClient
+	redshift.DescribeClusterSnapshotsAPIClient
+}
+
+// EBSPerformance holds the peaks of a volume with complete, unthrottled metrics.
+type EBSPerformance struct {
+	PeakIOPS, PeakMiBps float64
 }
 
 // EBSCandidate is an attached data volume idle-attached-ebs judges by its I/O.
@@ -374,7 +428,9 @@ type EBSCandidate struct {
 // arguments can hold passwords and are never copied.
 type EMRAPI interface {
 	emr.ListClustersAPIClient
+	emr.ListInstancesAPIClient
 	DescribeCluster(context.Context, *emr.DescribeClusterInput, ...func(*emr.Options)) (*emr.DescribeClusterOutput, error)
+	GetAutoTerminationPolicy(context.Context, *emr.GetAutoTerminationPolicyInput, ...func(*emr.Options)) (*emr.GetAutoTerminationPolicyOutput, error)
 	ListSteps(context.Context, *emr.ListStepsInput, ...func(*emr.Options)) (*emr.ListStepsOutput, error)
 }
 
@@ -386,6 +442,23 @@ type EMRCluster struct {
 	ActiveSteps     int        // pending, running or cancel-pending steps: a count only
 	LastStep        *time.Time // when the latest step started or ended, any state: its time only
 	StepsUnknown    bool
+}
+
+type EMRCompute struct {
+	ID, Name, State string
+	Created         *time.Time
+	Running         map[EMRNodeType]int // previous-generation nodes; nil if the read failed
+	ReleaseLabel    string
+	AutoTerminate   bool // step concurrency "terminate after last step"
+	// TerminationKnown is set once elasticmapreduce:GetAutoTerminationPolicy
+	// succeeds (including when no policy exists).
+	TerminationKnown  bool
+	HasAutoTermPolicy bool
+}
+
+type EMRNodeType struct {
+	Type     string
+	OnDemand bool
 }
 
 // MemoryDBAPI reads MemoryDB clusters (with their shards and nodes).
@@ -460,12 +533,15 @@ type PCConfig struct {
 	Min                      int  // that target's MinCapacity; -1: the targets couldn't be read
 }
 
-// ECSAPI is what the ECS service checks read.
+// ECSAPI is what the ECS service and cluster checks read.
 type ECSAPI interface {
 	ecs.ListClustersAPIClient
 	ecs.ListServicesAPIClient
+	ecs.ListContainerInstancesAPIClient
 	DescribeServices(context.Context, *ecs.DescribeServicesInput, ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error)
 	DescribeTaskDefinition(context.Context, *ecs.DescribeTaskDefinitionInput, ...func(*ecs.Options)) (*ecs.DescribeTaskDefinitionOutput, error)
+	DescribeContainerInstances(context.Context, *ecs.DescribeContainerInstancesInput, ...func(*ecs.Options)) (*ecs.DescribeContainerInstancesOutput, error)
+	DescribeCapacityProviders(context.Context, *ecs.DescribeCapacityProvidersInput, ...func(*ecs.Options)) (*ecs.DescribeCapacityProvidersOutput, error)
 }
 
 // ECSService keeps the service fields these checks use. Only target group
@@ -478,6 +554,8 @@ type ECSService struct {
 	Providers                  []ECSProvider // its capacity provider strategy
 	Platform                   string        // platformFamily
 	Desired, Running           int
+	SchedulingStrategy         string
+	DistinctInstance, MemberOf bool
 	Created                    *time.Time
 	TargetGroups               []string   // empty ARN denotes an unsupported attachment
 	TaskDef                    string     // its task definition's ARN
@@ -504,6 +582,22 @@ type ECSTaskSize struct {
 	CPU, MemMiB     int    // task-level CPU units and memory MiB
 	Arch, OS        string // runtimePlatform ("" = Linux x86_64)
 	Fargate         bool   // requiresCompatibilities has FARGATE
+	HasGPU          bool   // a container requires a GPU
 	ContainerCPU    int    // the sum of its containers' cpu
 	ContainerMemMiB int    // the sum of each container's larger of memory and memoryReservation
+	ReservedMemMiB  int    // the sum of memoryReservation, or memory where no reservation is set
+	MemberOf        bool   // the task definition constrains placement
+}
+
+// EC2SQLServerPrice keeps the catalog's default vCPU count even when its
+// On-Demand rate is missing or ambiguous.
+type EC2SQLServerPrice struct {
+	VCPU int
+	Hour float64
+}
+
+type EC2SQLServerSizing struct {
+	Current, Target EC2SQLServerPrice
+	TargetType      string
+	PriceIssue      string
 }
